@@ -1606,7 +1606,7 @@ export default function App() {
           onNav={navTo} onProfile={() => openProfile(me)} onAdmin={() => setAdminOpen(true)} />
       )}
       <div className="flex-1 flex justify-center min-w-0">
-        <div className="relative w-full max-w-md md:max-w-[620px] h-full bg-black flex flex-col overflow-hidden sm:border-x sm:border-neutral-900">
+        <div className="relative w-full max-w-md md:max-w-[720px] lg:max-w-[880px] h-full bg-black flex flex-col overflow-hidden sm:border-x sm:border-neutral-900">
           {children}
         </div>
       </div>
@@ -1651,7 +1651,7 @@ export default function App() {
       )}
 
       {/* bottom nav (mobile only) */}
-      <div className="md:hidden border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
+      <div className="border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
         {navItems.map((n) => (
           <button key={n.id} onClick={() => navTo(n.id)}
             className={tab === n.id ? "text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}>
@@ -1692,6 +1692,7 @@ export default function App() {
       )}
       {notices.length > 0 && <NoticesModal notices={notices} onAck={ackNotices} />}
       <Toast toast={toast} />
-    </>
+    </>,
+    true
   );
 }
