@@ -2,14 +2,15 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   Home, Search, PlusSquare, Heart, MessageCircle, Send, Bookmark,
   MoreHorizontal, X, ChevronLeft, LogOut, Camera, LayoutGrid, Trash2,
-  RefreshCw, Plus, Lock
+  RefreshCw, Plus, Lock, Shield, Settings, BadgeCheck, AlertTriangle, Ban, Info
 } from "lucide-react";
-import { supabase, usernameToEmail } from "./supabase.js";
+import { supabase, emailForKey, newLoginKey } from "./supabase.js";
 
 /* ============================== helpers ============================== */
 
 const LOGO_FONT = "'Snell Roundhand','Brush Script MT','Segoe Script','Savoye LET',cursive";
 const GRAD = "linear-gradient(45deg,#f9ce34,#ee2a7b,#6228d7)";
+const PERM_BAN = "9999-12-31T00:00:00.000Z";
 
 function usernameError(u) {
   if (!u || u.length < 1) return "Pick a username (at least 1 character).";
@@ -34,6 +35,17 @@ function fmtCount(n) {
   if (n >= 1e6) return (n / 1e6).toFixed(n % 1e6 ? 1 : 0).replace(/\.0$/, "") + "M";
   if (n >= 1e4) return (n / 1e3).toFixed(n % 1e3 ? 1 : 0).replace(/\.0$/, "") + "K";
   return n.toLocaleString();
+}
+
+function banActive(u) {
+  return !!(u?.bannedUntil && Date.parse(u.bannedUntil) > Date.now());
+}
+
+function banLabel(u) {
+  if (!banActive(u)) return null;
+  return u.bannedUntil.startsWith("9999")
+    ? "permanently"
+    : "until " + new Date(u.bannedUntil).toLocaleString();
 }
 
 function compressImage(file, maxDim = 1080, quality = 0.8) {
@@ -96,6 +108,15 @@ function Avatar({ user, size = 40, ring = false, onClick }) {
   );
 }
 
+function Uname({ users, u, size = 14, className = "" }) {
+  return (
+    <span className={"inline-flex items-center gap-1 min-w-0 " + className}>
+      <span className="truncate">{u}</span>
+      {users[u]?.verified && <BadgeCheck size={size} className="shrink-0" color="white" fill="#0095f6" />}
+    </span>
+  );
+}
+
 function Logo({ size = 30 }) {
   return (
     <span className="text-white select-none leading-none" style={{ fontFamily: LOGO_FONT, fontSize: size }}>
@@ -115,7 +136,7 @@ function Spinner({ className = "" }) {
 function Toast({ toast }) {
   if (!toast) return null;
   return (
-    <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-neutral-800 text-neutral-100 text-sm shadow-xl border border-neutral-700 whitespace-nowrap">
+    <div className="absolute bottom-20 md:bottom-8 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-lg bg-neutral-800 text-neutral-100 text-sm shadow-xl border border-neutral-700 whitespace-nowrap">
       {toast}
     </div>
   );
@@ -150,7 +171,7 @@ function FollowButtonWide({ me, users, target, onToggle }) {
   );
 }
 
-/* ============================== screens ============================== */
+/* ============================== auth ============================== */
 
 function AuthScreen({ onLogin, onSignup, busy }) {
   const [mode, setMode] = useState("login");
@@ -220,11 +241,33 @@ function AuthScreen({ onLogin, onSignup, busy }) {
   );
 }
 
+function BannedScreen({ user, onLogout }) {
+  const perm = user.bannedUntil?.startsWith("9999");
+  return (
+    <div className="flex-1 flex flex-col items-center justify-center px-8 text-center gap-4">
+      <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/40 flex items-center justify-center">
+        <Ban size={30} className="text-rose-400" />
+      </div>
+      <div className="text-xl font-bold text-neutral-100">Your account is suspended</div>
+      <div className="text-sm text-neutral-400">
+        {perm ? "This ban is permanent." : `You're banned until ${new Date(user.bannedUntil).toLocaleString()}.`}
+      </div>
+      {user.banReason && (
+        <div className="text-sm text-neutral-300 bg-neutral-900 border border-neutral-800 rounded-lg px-4 py-3 max-w-sm">
+          Reason: {user.banReason}
+        </div>
+      )}
+      <button onClick={onLogout} className="mt-2 text-sm font-semibold text-sky-400">Log out</button>
+    </div>
+  );
+}
+
 /* ------------------------------ feed post ------------------------------ */
 
 function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggleFollow, onOpenLikes, onDelete }) {
   const author = users[post.author];
   const liked = post.likes.includes(me);
+  const canModerate = post.author === me || me === "admin";
   const [burst, setBurst] = useState(false);
   const [menu, setMenu] = useState(false);
 
@@ -239,15 +282,15 @@ function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggle
       <div className="flex items-center gap-3 px-3 py-2.5">
         <Avatar user={author} size={34} ring onClick={() => onOpenProfile(post.author)} />
         <div className="flex-1 min-w-0">
-          <button onClick={() => onOpenProfile(post.author)} className="text-sm font-semibold text-neutral-100 truncate">
-            {post.author}
+          <button onClick={() => onOpenProfile(post.author)} className="text-sm font-semibold text-neutral-100 max-w-full">
+            <Uname users={users} u={post.author} />
           </button>
           <div className="text-[11px] text-neutral-500 leading-tight">{timeAgo(post.ts)} ago</div>
         </div>
         {post.author !== me && !users[me]?.following?.includes(post.author) && (
           <FollowButton me={me} users={users} target={post.author} onToggle={onToggleFollow} small />
         )}
-        {post.author === me && (
+        {canModerate && (
           <div className="relative">
             <button onClick={() => setMenu(!menu)} className="text-neutral-300 p-1"><MoreHorizontal size={20} /></button>
             {menu && (
@@ -289,7 +332,9 @@ function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggle
         )}
         {post.caption && (
           <div className="text-sm text-neutral-100">
-            <button onClick={() => onOpenProfile(post.author)} className="font-semibold mr-1.5">{post.author}</button>
+            <button onClick={() => onOpenProfile(post.author)} className="font-semibold mr-1.5 align-bottom">
+              <Uname users={users} u={post.author} size={13} />
+            </button>
             <span className="text-neutral-200">{post.caption}</span>
           </div>
         )}
@@ -335,7 +380,7 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
         <div className="flex px-4 gap-6 text-sm font-semibold">
           {["foryou", "following"].map((t) => (
             <button key={t} onClick={() => setFeedTab(t)}
-              className={"pb-2.5 border-b-2 " + (feedTab === t ? "text-neutral-100 border-neutral-100" : "text-neutral-500 border-transparent")}>
+              className={"pb-2.5 border-b-2 transition-colors " + (feedTab === t ? "text-neutral-100 border-neutral-100" : "text-neutral-500 border-transparent")}>
               {t === "foryou" ? "For you" : "Following"}
             </button>
           ))}
@@ -377,7 +422,9 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
                 <div key={u.u} className="flex items-center gap-3 py-2">
                   <Avatar user={u} size={44} ring onClick={() => actions.onOpenProfile(u.u)} />
                   <div className="flex-1 min-w-0" onClick={() => actions.onOpenProfile(u.u)}>
-                    <div className="text-sm font-semibold text-neutral-100 truncate cursor-pointer">{u.u}</div>
+                    <div className="text-sm font-semibold text-neutral-100 truncate cursor-pointer">
+                      <Uname users={users} u={u.u} />
+                    </div>
                     <div className="text-xs text-neutral-500 truncate">{u.name || `${fmtCount(u.followers?.length || 0)} followers`}</div>
                   </div>
                   <FollowButton me={me} users={users} target={u.u} onToggle={actions.onToggleFollow} small />
@@ -421,7 +468,9 @@ function SearchScreen({ me, users, posts, onOpenProfile, onOpenPost, onToggleFol
             <div key={u.u} className="flex items-center gap-3 py-2.5">
               <Avatar user={u} size={48} ring onClick={() => onOpenProfile(u.u)} />
               <div className="flex-1 min-w-0 cursor-pointer" onClick={() => onOpenProfile(u.u)}>
-                <div className="text-sm font-semibold text-neutral-100 truncate">{u.u}</div>
+                <div className="text-sm font-semibold text-neutral-100 truncate">
+                  <Uname users={users} u={u.u} />
+                </div>
                 <div className="text-xs text-neutral-500 truncate">
                   {(u.name ? u.name + " · " : "") + fmtCount(u.followers?.length || 0) + " followers"}
                 </div>
@@ -434,7 +483,7 @@ function SearchScreen({ me, users, posts, onOpenProfile, onOpenPost, onToggleFol
         <div className="grid grid-cols-3 gap-px pt-1">
           {posts.map((p) => (
             <button key={p.id} onClick={() => onOpenPost(p.id)} className="relative aspect-square bg-neutral-900 overflow-hidden">
-              <img src={p.image} alt="" className="w-full h-full object-cover" draggable={false} loading="lazy" />
+              <img src={p.image} alt="" className="w-full h-full object-cover hover:opacity-80 transition-opacity" draggable={false} loading="lazy" />
               <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-[11px] font-semibold drop-shadow">
                 <Heart size={11} fill="white" /> {fmtCount(p.likes.length)}
               </div>
@@ -485,7 +534,7 @@ function CreateScreen({ onShare, busy }) {
 
       {!image ? (
         <button onClick={() => fileRef.current?.click()}
-          className="m-4 w-[calc(100%-2rem)] aspect-square rounded-2xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors">
+          className="m-4 w-[calc(100%-2rem)] aspect-square max-h-[480px] rounded-2xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors">
           <Camera size={44} strokeWidth={1.3} />
           <span className="text-sm font-medium">Tap to choose a photo</span>
         </button>
@@ -508,7 +557,7 @@ function CreateScreen({ onShare, busy }) {
 
 /* ------------------------------ profile ------------------------------ */
 
-function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow, onOpenList, onEdit, onLogout, onBack, fromTab }) {
+function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow, onOpenList, onEdit, onSettings, onBack, fromTab }) {
   const u = users[username];
   if (!u) return <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm">User not found.</div>;
   const own = username === me;
@@ -522,10 +571,12 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
         {!own && fromTab !== "profile" && (
           <button onClick={onBack}><ChevronLeft size={24} className="text-neutral-100" /></button>
         )}
-        <span className="text-neutral-100 font-bold text-lg flex-1 truncate">{username}</span>
+        <span className="text-neutral-100 font-bold text-lg flex-1 truncate">
+          <Uname users={users} u={username} size={17} />
+        </span>
         {own && (
-          <button onClick={onLogout} className="flex items-center gap-1.5 text-neutral-400 text-xs font-semibold hover:text-neutral-200">
-            <LogOut size={16} /> Log out
+          <button onClick={onSettings} className="text-neutral-300 hover:text-neutral-100 transition-colors">
+            <Settings size={22} />
           </button>
         )}
       </div>
@@ -597,7 +648,7 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
           <div className="grid grid-cols-3 gap-px">
             {myPosts.map((p) => (
               <button key={p.id} onClick={() => onOpenPost(p.id)} className="relative aspect-square bg-neutral-900 overflow-hidden">
-                <img src={p.image} alt="" className="w-full h-full object-cover" draggable={false} loading="lazy" />
+                <img src={p.image} alt="" className="w-full h-full object-cover hover:opacity-80 transition-opacity" draggable={false} loading="lazy" />
               </button>
             ))}
           </div>
@@ -613,6 +664,7 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
   const [text, setText] = useState("");
   const liked = post.likes.includes(me);
   const author = users[post.author];
+  const canModerate = post.author === me || me === "admin";
 
   const send = () => {
     const t = text.trim();
@@ -622,12 +674,12 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
   };
 
   return (
-    <div className="absolute inset-0 z-40 bg-black flex flex-col">
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
       <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">Post</span>
         <div className="flex-1" />
-        {post.author === me && (
+        {canModerate && (
           <button onClick={() => { onDelete(post.id); onClose(); }} className="text-rose-400"><Trash2 size={19} /></button>
         )}
       </div>
@@ -635,7 +687,9 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
       <div className="flex-1 overflow-y-auto">
         <div className="flex items-center gap-3 px-3 py-2.5">
           <Avatar user={author} size={34} ring onClick={() => { onClose(); onOpenProfile(post.author); }} />
-          <button onClick={() => { onClose(); onOpenProfile(post.author); }} className="text-sm font-semibold text-neutral-100">{post.author}</button>
+          <button onClick={() => { onClose(); onOpenProfile(post.author); }} className="text-sm font-semibold text-neutral-100">
+            <Uname users={users} u={post.author} />
+          </button>
           <span className="text-xs text-neutral-500">· {timeAgo(post.ts)}</span>
         </div>
         <img src={post.image} alt="" className="w-full max-h-[480px] object-contain bg-neutral-950" />
@@ -667,7 +721,9 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
               <Avatar user={users[c.u]} size={30} onClick={() => { onClose(); onOpenProfile(c.u); }} />
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-neutral-100">
-                  <button onClick={() => { onClose(); onOpenProfile(c.u); }} className="font-semibold mr-1.5">{c.u}</button>
+                  <button onClick={() => { onClose(); onOpenProfile(c.u); }} className="font-semibold mr-1.5 align-bottom">
+                    <Uname users={users} u={c.u} size={12} />
+                  </button>
                   <span className="text-neutral-200">{c.text}</span>
                 </div>
                 <div className="text-[11px] text-neutral-500">{timeAgo(c.ts)}</div>
@@ -691,7 +747,7 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
 
 function ListModal({ title, usernames, users, me, onClose, onOpenProfile, onToggleFollow }) {
   return (
-    <div className="absolute inset-0 z-40 bg-black flex flex-col">
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
       <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">{title}</span>
@@ -705,7 +761,9 @@ function ListModal({ title, usernames, users, me, onClose, onOpenProfile, onTogg
             <div key={un} className="flex items-center gap-3 py-2.5">
               <Avatar user={u} size={44} onClick={() => { onClose(); onOpenProfile(un); }} />
               <div className="flex-1 min-w-0 cursor-pointer" onClick={() => { onClose(); onOpenProfile(un); }}>
-                <div className="text-sm font-semibold text-neutral-100 truncate">{un}</div>
+                <div className="text-sm font-semibold text-neutral-100 truncate">
+                  <Uname users={users} u={un} />
+                </div>
                 {u.name && <div className="text-xs text-neutral-500 truncate">{u.name}</div>}
               </div>
               <FollowButton me={me} users={users} target={un} onToggle={onToggleFollow} small />
@@ -737,7 +795,7 @@ function EditProfileModal({ user, onClose, onSave, busy }) {
   };
 
   return (
-    <div className="absolute inset-0 z-40 bg-black flex flex-col">
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
       <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
         <button onClick={onClose}><X size={24} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold flex-1">Edit profile</span>
@@ -766,6 +824,371 @@ function EditProfileModal({ user, onClose, onSave, busy }) {
   );
 }
 
+/* ------------------------------ settings ------------------------------ */
+
+function SettingsModal({ user, onClose, onChangeUsername, onChangePassword, onLogout }) {
+  const [newU, setNewU] = useState(user.u);
+  const [uMsg, setUMsg] = useState(null);
+  const [uBusy, setUBusy] = useState(false);
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [pMsg, setPMsg] = useState(null);
+  const [pBusy, setPBusy] = useState(false);
+
+  const saveUsername = async () => {
+    setUMsg(null); setUBusy(true);
+    const err = await onChangeUsername(newU.trim().toLowerCase());
+    setUBusy(false);
+    setUMsg(err ? { e: true, t: err } : { e: false, t: "Username updated. Use it next time you log in." });
+  };
+
+  const savePassword = async () => {
+    setPMsg(null);
+    if (pw !== pw2) { setPMsg({ e: true, t: "Passwords don't match." }); return; }
+    setPBusy(true);
+    const err = await onChangePassword(pw);
+    setPBusy(false);
+    if (err) setPMsg({ e: true, t: err });
+    else { setPMsg({ e: false, t: "Password updated." }); setPw(""); setPw2(""); }
+  };
+
+  return (
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
+      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
+        <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
+        <span className="text-neutral-100 font-semibold">Settings</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-5 py-6 space-y-8">
+        <div>
+          <div className="text-sm font-semibold text-neutral-100 mb-1">Username</div>
+          <div className="text-xs text-neutral-500 mb-3">Letters, numbers, periods and underscores. You'll log in with the new one.</div>
+          <input value={newU} onChange={(e) => setNewU(e.target.value)}
+            autoCapitalize="none" autoCorrect="off" spellCheck={false}
+            className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-3 text-sm text-neutral-100 outline-none focus:border-neutral-600" />
+          {uMsg && <div className={"text-xs mt-2 " + (uMsg.e ? "text-rose-400" : "text-emerald-400")}>{uMsg.t}</div>}
+          <button onClick={saveUsername} disabled={uBusy || newU.trim().toLowerCase() === user.u}
+            className="mt-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-5 py-2 transition-colors">
+            {uBusy ? "Saving…" : "Save username"}
+          </button>
+        </div>
+
+        <div className="h-px bg-neutral-900" />
+
+        <div>
+          <div className="text-sm font-semibold text-neutral-100 mb-1">Password</div>
+          <div className="text-xs text-neutral-500 mb-3">At least 6 characters. There's no reset, so don't lose it.</div>
+          <div className="space-y-2.5">
+            <input value={pw} onChange={(e) => setPw(e.target.value)} type="password" placeholder="New password"
+              className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-3 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600" />
+            <input value={pw2} onChange={(e) => setPw2(e.target.value)} type="password" placeholder="Repeat new password"
+              className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-3 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600" />
+          </div>
+          {pMsg && <div className={"text-xs mt-2 " + (pMsg.e ? "text-rose-400" : "text-emerald-400")}>{pMsg.t}</div>}
+          <button onClick={savePassword} disabled={pBusy || !pw}
+            className="mt-3 bg-sky-500 hover:bg-sky-400 disabled:opacity-40 text-white text-sm font-semibold rounded-lg px-5 py-2 transition-colors">
+            {pBusy ? "Saving…" : "Save password"}
+          </button>
+        </div>
+
+        <div className="h-px bg-neutral-900" />
+
+        <button onClick={onLogout}
+          className="flex items-center gap-2 text-rose-400 text-sm font-semibold">
+          <LogOut size={18} /> Log out
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ notices ------------------------------ */
+
+function NoticesModal({ notices, onAck }) {
+  const iconFor = (t) =>
+    t === "warning" ? <AlertTriangle size={20} className="text-amber-400 shrink-0" />
+      : t === "ban" ? <Ban size={20} className="text-rose-400 shrink-0" />
+        : <Info size={20} className="text-sky-400 shrink-0" />;
+  const titleFor = (t) =>
+    t === "warning" ? "Warning" : t === "ban" ? "Account notice" : t === "username" ? "Username changed" : "Notice";
+
+  return (
+    <div className="absolute inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-5 anim-fade">
+      <div className="w-full max-w-sm bg-neutral-950 border border-neutral-800 rounded-2xl overflow-hidden shadow-2xl anim-pop">
+        <div className="px-5 py-4 border-b border-neutral-900 font-semibold text-neutral-100">
+          You have {notices.length === 1 ? "a notice" : `${notices.length} notices`} from Grambie
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto divide-y divide-neutral-900">
+          {notices.map((n) => (
+            <div key={n.id} className="flex gap-3 px-5 py-4">
+              {iconFor(n.type)}
+              <div className="min-w-0">
+                <div className="text-xs font-semibold text-neutral-400 mb-0.5">{titleFor(n.type)} · {timeAgo(Date.parse(n.created_at))} ago</div>
+                <div className="text-sm text-neutral-100 whitespace-pre-wrap">{n.message}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <button onClick={onAck}
+          className="w-full py-3.5 text-sm font-semibold text-sky-400 hover:bg-neutral-900 transition-colors border-t border-neutral-900">
+          Got it
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ admin panel ------------------------------ */
+
+function AdminPanel({ users, posts, me, onClose, admin }) {
+  const [view, setView] = useState("users");
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(null);
+  const [form, setForm] = useState(null); // warn | tempban | permban | rename
+  const [reason, setReason] = useState("");
+  const [amount, setAmount] = useState("24");
+  const [unit, setUnit] = useState("hours");
+  const [newName, setNewName] = useState("");
+  const [err, setErr] = useState(null);
+  const [working, setWorking] = useState(false);
+  const [confirmDel, setConfirmDel] = useState(null);
+
+  const query = q.trim().toLowerCase();
+  const list = Object.values(users)
+    .filter((u) => u.u !== me)
+    .filter((u) => !query || u.u.includes(query) || (u.name || "").toLowerCase().includes(query))
+    .sort((a, b) => a.u.localeCompare(b.u));
+
+  const target = sel ? users[sel] : null;
+
+  const openForm = (f) => { setForm(f); setReason(""); setNewName(""); setErr(null); };
+
+  const submit = async () => {
+    setErr(null); setWorking(true);
+    try {
+      if (form === "warn") {
+        if (!reason.trim()) { setErr("Write a reason."); return; }
+        const e = await admin.warn(sel, reason.trim());
+        if (e) { setErr(e); return; }
+        setForm(null);
+      }
+      if (form === "tempban") {
+        const n = Number(amount);
+        const hours = unit === "days" ? n * 24 : n;
+        if (!hours || hours <= 0) { setErr("Enter a valid duration."); return; }
+        if (!reason.trim()) { setErr("Write a reason."); return; }
+        const e = await admin.ban(sel, hours, reason.trim());
+        if (e) { setErr(e); return; }
+        setForm(null);
+      }
+      if (form === "permban") {
+        if (!reason.trim()) { setErr("Write a reason."); return; }
+        const e = await admin.ban(sel, null, reason.trim());
+        if (e) { setErr(e); return; }
+        setForm(null);
+      }
+      if (form === "rename") {
+        const nu = newName.trim().toLowerCase();
+        const e = await admin.rename(sel, nu, reason.trim() || "Not specified");
+        if (e) { setErr(e); return; }
+        setSel(nu);
+        setForm(null);
+      }
+    } finally { setWorking(false); }
+  };
+
+  const ActionBtn = ({ label, onClick, danger = false }) => (
+    <button onClick={onClick} disabled={working}
+      className={"px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors disabled:opacity-40 " +
+        (danger ? "bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20"
+          : "bg-neutral-800 text-neutral-100 hover:bg-neutral-700")}>
+      {label}
+    </button>
+  );
+
+  return (
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
+      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
+        <button onClick={() => (sel ? setSel(null) : onClose())}>
+          <ChevronLeft size={26} className="text-neutral-100" />
+        </button>
+        <Shield size={18} className="text-sky-400" />
+        <span className="text-neutral-100 font-semibold flex-1">
+          {sel ? "@" + sel : "Admin panel"}
+        </span>
+        {!sel && (
+          <div className="flex gap-1 bg-neutral-900 rounded-lg p-1">
+            {["users", "posts"].map((v) => (
+              <button key={v} onClick={() => setView(v)}
+                className={"px-3 py-1 rounded-md text-xs font-semibold capitalize transition-colors " +
+                  (view === v ? "bg-neutral-700 text-neutral-100" : "text-neutral-400")}>
+                {v}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {/* ---------- user detail ---------- */}
+        {target ? (
+          <div className="p-4 space-y-5">
+            <div className="flex items-center gap-4">
+              <Avatar user={target} size={64} ring />
+              <div className="min-w-0">
+                <div className="text-base font-bold text-neutral-100"><Uname users={users} u={target.u} size={16} /></div>
+                {target.name && <div className="text-sm text-neutral-400">{target.name}</div>}
+                <div className="text-xs text-neutral-500">
+                  {fmtCount(target.followers.length)} followers · {fmtCount(posts.filter((p) => p.author === target.u).length)} posts
+                </div>
+              </div>
+            </div>
+
+            {banActive(target) && (
+              <div className="bg-rose-500/10 border border-rose-500/30 rounded-lg px-4 py-3 text-sm text-rose-300">
+                Banned {banLabel(target)}.{target.banReason ? ` Reason: ${target.banReason}` : ""}
+              </div>
+            )}
+            {target.bio && <div className="text-sm text-neutral-300 bg-neutral-900 rounded-lg px-4 py-3">Bio: {target.bio}</div>}
+
+            <div className="flex flex-wrap gap-2">
+              <ActionBtn label={target.verified ? "Remove verification" : "Verify ✓"} onClick={() => admin.verify(sel, !target.verified)} />
+              <ActionBtn label="Warn" onClick={() => openForm("warn")} />
+              {banActive(target)
+                ? <ActionBtn label="Unban" onClick={() => admin.unban(sel)} />
+                : <>
+                  <ActionBtn label="Temp ban" danger onClick={() => openForm("tempban")} />
+                  <ActionBtn label="Permanent ban" danger onClick={() => openForm("permban")} />
+                </>}
+              {target.avatar && <ActionBtn label="Remove photo" danger onClick={() => admin.clearAvatar(sel)} />}
+              {target.bio && <ActionBtn label="Clear bio" danger onClick={() => admin.clearBio(sel)} />}
+              <ActionBtn label="Change username" onClick={() => openForm("rename")} />
+            </div>
+
+            {form && (
+              <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
+                <div className="text-sm font-semibold text-neutral-100">
+                  {form === "warn" && "Send a warning"}
+                  {form === "tempban" && "Temporary ban"}
+                  {form === "permban" && "Permanent ban"}
+                  {form === "rename" && "Change username"}
+                </div>
+
+                {form === "tempban" && (
+                  <div className="flex gap-2">
+                    <input value={amount} onChange={(e) => setAmount(e.target.value)} type="number" min="1"
+                      className="w-24 bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2.5 text-sm text-neutral-100 outline-none focus:border-neutral-600" />
+                    <select value={unit} onChange={(e) => setUnit(e.target.value)}
+                      className="bg-neutral-900 border border-neutral-800 rounded-lg px-3 py-2.5 text-sm text-neutral-100 outline-none">
+                      <option value="hours">hours</option>
+                      <option value="days">days</option>
+                    </select>
+                  </div>
+                )}
+
+                {form === "rename" && (
+                  <input value={newName} onChange={(e) => setNewName(e.target.value)}
+                    placeholder={`New username (current: ${sel})`}
+                    autoCapitalize="none" autoCorrect="off" spellCheck={false}
+                    className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-2.5 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600" />
+                )}
+
+                <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2}
+                  placeholder={form === "rename" ? "Reason shown to the user (e.g. impersonation)" : "Reason shown to the user"}
+                  className="w-full bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-2.5 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600 resize-none" />
+
+                {err && <div className="text-rose-400 text-xs">{err}</div>}
+
+                <div className="flex gap-2 justify-end">
+                  <button onClick={() => setForm(null)} className="px-4 py-2 rounded-lg text-xs font-semibold text-neutral-300 hover:bg-neutral-900">Cancel</button>
+                  <button onClick={submit} disabled={working}
+                    className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-white disabled:opacity-50 transition-colors">
+                    {working ? "Working…" : "Confirm"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="text-[11px] text-neutral-600 leading-relaxed">
+              Warnings, bans and username changes send the user a popup notice the next time they open Grambie.
+            </div>
+          </div>
+        ) : view === "users" ? (
+          /* ---------- user list ---------- */
+          <div>
+            <div className="px-4 pt-3 pb-2">
+              <div className="flex items-center gap-2 bg-neutral-900 rounded-full px-4 py-2.5">
+                <Search size={16} className="text-neutral-500" />
+                <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search users"
+                  className="flex-1 bg-transparent text-sm text-neutral-100 placeholder-neutral-500 outline-none" />
+              </div>
+            </div>
+            {list.length === 0 && <div className="text-neutral-500 text-sm text-center py-10">No users found.</div>}
+            {list.map((u) => (
+              <button key={u.u} onClick={() => { setSel(u.u); setForm(null); }}
+                className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-neutral-950 text-left transition-colors">
+                <Avatar user={u} size={42} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-neutral-100 truncate"><Uname users={users} u={u.u} /></div>
+                  <div className="text-xs truncate">
+                    {banActive(u)
+                      ? <span className="text-rose-400">Banned {banLabel(u)}</span>
+                      : <span className="text-neutral-500">{u.name || `${fmtCount(u.followers.length)} followers`}</span>}
+                  </div>
+                </div>
+                <MoreHorizontal size={18} className="text-neutral-600" />
+              </button>
+            ))}
+          </div>
+        ) : (
+          /* ---------- posts list ---------- */
+          <div>
+            {posts.length === 0 && <div className="text-neutral-500 text-sm text-center py-10">No posts.</div>}
+            {posts.map((p) => (
+              <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-950">
+                <img src={p.image} alt="" className="w-12 h-12 rounded-lg object-cover bg-neutral-900" loading="lazy" />
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-semibold text-neutral-100 truncate">@{p.author}</div>
+                  <div className="text-xs text-neutral-500 truncate">{p.caption || "(no caption)"} · {timeAgo(p.ts)} ago</div>
+                </div>
+                {confirmDel === p.id ? (
+                  <button onClick={() => { admin.deletePost(p.id); setConfirmDel(null); }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white">Confirm</button>
+                ) : (
+                  <button onClick={() => setConfirmDel(p.id)} className="text-rose-400 p-1.5"><Trash2 size={17} /></button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ sidebar (desktop) ------------------------------ */
+
+function Sidebar({ me, users, tab, isAdmin, onNav, onProfile, onAdmin }) {
+  const Item = ({ active, icon, label, onClick }) => (
+    <button onClick={onClick}
+      className={"flex items-center gap-4 px-3 py-3 rounded-xl hover:bg-neutral-900 transition-colors w-full text-left " +
+        (active ? "font-bold text-neutral-100" : "text-neutral-300")}>
+      {icon}
+      <span className="text-[15px]">{label}</span>
+    </button>
+  );
+  return (
+    <div className="hidden md:flex flex-col w-64 shrink-0 border-r border-neutral-900 px-3 py-6 gap-1">
+      <div className="px-3 pb-8"><Logo size={34} /></div>
+      <Item active={tab === "home"} icon={<Home size={26} strokeWidth={tab === "home" ? 2.4 : 1.8} />} label="Home" onClick={() => onNav("home")} />
+      <Item active={tab === "search"} icon={<Search size={26} strokeWidth={tab === "search" ? 2.4 : 1.8} />} label="Search" onClick={() => onNav("search")} />
+      <Item active={tab === "create"} icon={<PlusSquare size={26} strokeWidth={tab === "create" ? 2.4 : 1.8} />} label="Create" onClick={() => onNav("create")} />
+      <Item active={tab === "profile"} icon={<Avatar user={users[me]} size={26} />} label="Profile" onClick={onProfile} />
+      {isAdmin && <Item icon={<Shield size={26} strokeWidth={1.8} />} label="Admin" onClick={onAdmin} />}
+    </div>
+  );
+}
+
 /* =============================== app =============================== */
 
 export default function App() {
@@ -773,6 +1196,7 @@ export default function App() {
   const [authReady, setAuthReady] = useState(false);
   const [users, setUsers] = useState({});
   const [posts, setPosts] = useState([]);
+  const [notices, setNotices] = useState([]);
   const [dataReady, setDataReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -784,6 +1208,8 @@ export default function App() {
   const [activePostId, setActivePostId] = useState(null);
   const [listModal, setListModal] = useState(null);
   const [editOpen, setEditOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
   const toastTimer = useRef(null);
@@ -807,7 +1233,7 @@ export default function App() {
   /* ----- data loading ----- */
 
   const fetchAll = useCallback(async () => {
-    const [profilesRes, followsRes, postsRes] = await Promise.all([
+    const [profilesRes, followsRes, postsRes, noticesRes] = await Promise.all([
       supabase.from("profiles").select("*"),
       supabase.from("follows").select("*"),
       supabase
@@ -815,6 +1241,7 @@ export default function App() {
         .select("*, likes(user_id), comments(id, user_id, text, created_at)")
         .order("created_at", { ascending: false })
         .limit(100),
+      supabase.from("notices").select("*").eq("acknowledged", false).order("created_at", { ascending: true }),
     ]);
 
     const profiles = profilesRes.data || [];
@@ -828,6 +1255,7 @@ export default function App() {
       map[p.username] = {
         id: p.id, u: p.username, name: p.name || "", bio: p.bio || "",
         avatar: p.avatar_url || null, followers: [], following: [],
+        verified: !!p.verified, bannedUntil: p.banned_until || null, banReason: p.ban_reason || null,
       };
     });
     follows.forEach((f) => {
@@ -855,6 +1283,7 @@ export default function App() {
 
     setUsers(map);
     setPosts(mapped);
+    setNotices(noticesRes.data || []);
     setDataReady(true);
     return map;
   }, []);
@@ -867,10 +1296,11 @@ export default function App() {
     return found ? found.u : null;
   }, [session, users]);
 
-  // a session whose profile row is missing can't use the app — sign it out
+  const isAdmin = me === "admin";
+
   useEffect(() => {
-    if (authReady && dataReady && session && !me) supabase.auth.signOut();
-  }, [authReady, dataReady, session, me]);
+    if (authReady && dataReady && session && !me && !busy) supabase.auth.signOut();
+  }, [authReady, dataReady, session, me, busy]);
 
   /* ----- auth actions ----- */
 
@@ -884,24 +1314,19 @@ export default function App() {
         .from("profiles").select("username").eq("username", username).maybeSingle();
       if (existing) return "That username is taken.";
 
-      const { data, error } = await supabase.auth.signUp({
-        email: usernameToEmail(username),
-        password: pw,
-      });
-      if (error) {
-        if (/already registered/i.test(error.message)) return "That username is taken.";
-        return error.message;
-      }
+      const loginEmail = emailForKey(newLoginKey());
+      const { data, error } = await supabase.auth.signUp({ email: loginEmail, password: pw });
+      if (error) return error.message;
       if (!data.session) {
         return 'Almost there — in Supabase, turn OFF "Confirm email" (Authentication → Sign In / Up → Email), then try again.';
       }
 
       const { error: pErr } = await supabase
         .from("profiles")
-        .insert({ id: data.user.id, username, name: name || "" });
+        .insert({ id: data.user.id, username, name: name || "", login_email: loginEmail });
       if (pErr) {
         await supabase.auth.signOut();
-        return "Couldn't create your profile: " + pErr.message;
+        return /duplicate|unique/i.test(pErr.message) ? "That username is taken." : "Couldn't create your profile: " + pErr.message;
       }
 
       await fetchAll();
@@ -913,10 +1338,11 @@ export default function App() {
   const login = async (username, pw) => {
     setBusy(true);
     try {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: usernameToEmail(username.toLowerCase()),
-        password: pw,
-      });
+      const uname = username.toLowerCase();
+      const { data: prof } = await supabase
+        .from("profiles").select("login_email").eq("username", uname).maybeSingle();
+      if (!prof?.login_email) return "Wrong username or password.";
+      const { error } = await supabase.auth.signInWithPassword({ email: prof.login_email, password: pw });
       if (error) return "Wrong username or password.";
       await fetchAll();
       setTab("home");
@@ -928,6 +1354,7 @@ export default function App() {
     await supabase.auth.signOut();
     setTab("home"); setProfileUser(null);
     setActivePostId(null); setListModal(null); setEditOpen(false);
+    setSettingsOpen(false); setAdminOpen(false);
   };
 
   /* ----- app actions ----- */
@@ -968,8 +1395,7 @@ export default function App() {
     setPosts((ps) => ps.filter((p) => p.id !== id));
     setActivePostId((cur) => (cur === id ? null : cur));
     await supabase.from("posts").delete().eq("id", id);
-    // best-effort: remove the image file too
-    if (post?.image) {
+    if (post?.image && (post.author === me)) {
       const path = post.image.split("/images/")[1]?.split("?")[0];
       if (path) supabase.storage.from("images").remove([decodeURIComponent(path)]);
     }
@@ -1022,7 +1448,7 @@ export default function App() {
       let avatar_url = users[me]?.avatar || null;
       if (changedAvatar && avatar) {
         const url = await uploadDataUrl(avatar, `${meId}/avatar.jpg`);
-        avatar_url = url + "?v=" + Date.now(); // bust CDN cache after re-upload
+        avatar_url = url + "?v=" + Date.now();
       }
       const { error } = await supabase
         .from("profiles")
@@ -1037,6 +1463,124 @@ export default function App() {
     } finally { setBusy(false); }
   };
 
+  /* ----- settings actions ----- */
+
+  const changeUsername = async (newU) => {
+    const err = usernameError(newU);
+    if (err) return err;
+    if (newU === me) return "That's already your username.";
+    if (newU === "admin") return "That username is reserved.";
+    if (users[newU]) return "That username is taken.";
+    const old = me;
+    const { error } = await supabase.from("profiles").update({ username: newU }).eq("id", session.user.id);
+    if (error) return /duplicate|unique/i.test(error.message) ? "That username is taken." : error.message;
+    await fetchAll();
+    setProfileUser((p) => (p === old ? newU : p));
+    showToast("Username updated");
+    return null;
+  };
+
+  const changePassword = async (pw) => {
+    if (!pw || pw.length < 6) return "Password needs at least 6 characters.";
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    if (error) return error.message;
+    showToast("Password updated");
+    return null;
+  };
+
+  /* ----- notices ----- */
+
+  const ackNotices = async () => {
+    const ids = notices.map((n) => n.id);
+    setNotices([]);
+    if (ids.length) await supabase.from("notices").update({ acknowledged: true }).in("id", ids);
+  };
+
+  /* ----- admin actions ----- */
+
+  const sendNotice = async (targetU, type, message) => {
+    const id = users[targetU]?.id;
+    if (!id) return;
+    await supabase.from("notices").insert({ user_id: id, type, message });
+  };
+
+  const adminUpdate = async (targetU, fields) => {
+    const id = users[targetU]?.id;
+    if (!id) return "User not found.";
+    const { error } = await supabase.from("profiles").update(fields).eq("id", id);
+    return error ? error.message : null;
+  };
+
+  const admin = {
+    verify: async (u, val) => {
+      const e = await adminUpdate(u, { verified: val });
+      if (e) { showToast(e); return e; }
+      if (val) await sendNotice(u, "info", "Your account is now verified ✓");
+      await fetchAll();
+      showToast(val ? "@" + u + " verified" : "Verification removed");
+      return null;
+    },
+    warn: async (u, reason) => {
+      await sendNotice(u, "warning", `You have received a warning from Grambie.\nReason: ${reason}`);
+      showToast("Warning sent to @" + u);
+      return null;
+    },
+    ban: async (u, hours, reason) => {
+      const until = hours == null ? PERM_BAN : new Date(Date.now() + hours * 3600 * 1000).toISOString();
+      const e = await adminUpdate(u, { banned_until: until, ban_reason: reason });
+      if (e) return e;
+      await sendNotice(u, "ban", hours == null
+        ? `Your account has been permanently banned.\nReason: ${reason}`
+        : `Your account has been banned until ${new Date(until).toLocaleString()}.\nReason: ${reason}`);
+      await fetchAll();
+      showToast("@" + u + " banned");
+      return null;
+    },
+    unban: async (u) => {
+      const e = await adminUpdate(u, { banned_until: null, ban_reason: null });
+      if (e) { showToast(e); return e; }
+      await sendNotice(u, "info", "Your ban has been lifted. Welcome back.");
+      await fetchAll();
+      showToast("@" + u + " unbanned");
+      return null;
+    },
+    clearAvatar: async (u) => {
+      const e = await adminUpdate(u, { avatar_url: null });
+      if (e) { showToast(e); return e; }
+      await sendNotice(u, "info", "Your profile photo was removed by a moderator.");
+      await fetchAll();
+      showToast("Photo removed");
+      return null;
+    },
+    clearBio: async (u) => {
+      const e = await adminUpdate(u, { bio: "" });
+      if (e) { showToast(e); return e; }
+      await sendNotice(u, "info", "Your bio was removed by a moderator.");
+      await fetchAll();
+      showToast("Bio cleared");
+      return null;
+    },
+    rename: async (u, newU, reason) => {
+      const err = usernameError(newU);
+      if (err) return err;
+      if (newU === u) return "That's already their username.";
+      if (users[newU]) return "That username is taken.";
+      const targetId = users[u]?.id;
+      if (!targetId) return "User not found.";
+      const { error } = await supabase.from("profiles").update({ username: newU }).eq("id", targetId);
+      if (error) return /duplicate|unique/i.test(error.message) ? "That username is taken." : error.message;
+      await supabase.from("notices").insert({
+        user_id: targetId, type: "username",
+        message: `Your username has been changed from @${u} to @${newU} by a moderator.\nReason: ${reason}\nUse @${newU} the next time you log in.`,
+      });
+      await fetchAll();
+      setProfileUser((p) => (p === u ? newU : p));
+      showToast(`@${u} → @${newU}`);
+      return null;
+    },
+    deletePost,
+  };
+
   /* ----- navigation ----- */
 
   const openProfile = (username) => {
@@ -1047,22 +1591,31 @@ export default function App() {
   const openPost = (id) => setActivePostId(id);
   const openLikes = (post) => setListModal({ title: "Likes", usernames: post.likes });
   const openList = (title, usernames) => setListModal({ title, usernames });
+  const navTo = (t) => { setTab(t); if (t !== "profile" && t !== "profileView") setProfileUser(null); };
 
   const activePost = posts.find((p) => p.id === activePostId) || null;
+  const meUser = me ? users[me] : null;
 
   /* ----- render ----- */
 
-  const shell = (children) => (
-    <div className="w-full h-dvh bg-neutral-950 flex justify-center"
+  const frame = (children, withSidebar = false) => (
+    <div className="w-full h-dvh bg-black flex"
       style={{ fontFamily: "-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif" }}>
-      <div className="relative w-full max-w-md h-full bg-black flex flex-col overflow-hidden sm:border-x sm:border-neutral-900">
-        {children}
+      {withSidebar && (
+        <Sidebar me={me} users={users} tab={tab} isAdmin={isAdmin}
+          onNav={navTo} onProfile={() => openProfile(me)} onAdmin={() => setAdminOpen(true)} />
+      )}
+      <div className="flex-1 flex justify-center min-w-0">
+        <div className="relative w-full max-w-md md:max-w-[620px] h-full bg-black flex flex-col overflow-hidden sm:border-x sm:border-neutral-900">
+          {children}
+        </div>
       </div>
     </div>
   );
 
-  if (!authReady || !dataReady) return shell(<Spinner className="flex-1" />);
-  if (!session || !me) return shell(<AuthScreen onLogin={login} onSignup={signup} busy={busy} />);
+  if (!authReady || !dataReady) return frame(<Spinner className="flex-1" />);
+  if (!session || !me) return frame(<AuthScreen onLogin={login} onSignup={signup} busy={busy} />);
+  if (banActive(meUser)) return frame(<BannedScreen user={meUser} onLogout={logout} />);
 
   const sharedActions = {
     onLike: toggleLike,
@@ -1074,12 +1627,12 @@ export default function App() {
   };
 
   const navItems = [
-    { id: "home", icon: <Home size={26} />, go: () => setTab("home") },
-    { id: "search", icon: <Search size={26} />, go: () => setTab("search") },
-    { id: "create", icon: <PlusSquare size={26} />, go: () => setTab("create") },
+    { id: "home", icon: <Home size={26} /> },
+    { id: "search", icon: <Search size={26} /> },
+    { id: "create", icon: <PlusSquare size={26} /> },
   ];
 
-  return shell(
+  return frame(
     <>
       {tab === "home" && (
         <HomeScreen me={me} users={users} posts={posts} feedTab={feedTab} setFeedTab={setFeedTab}
@@ -1093,17 +1646,23 @@ export default function App() {
       {(tab === "profile" || tab === "profileView") && (
         <ProfileScreen username={profileUser || me} me={me} users={users} posts={posts}
           onOpenPost={openPost} onToggleFollow={toggleFollow} onOpenList={openList}
-          onEdit={() => setEditOpen(true)} onLogout={logout}
+          onEdit={() => setEditOpen(true)} onSettings={() => setSettingsOpen(true)}
           onBack={() => { setTab(prevTab); setProfileUser(null); }} fromTab={tab} />
       )}
 
-      <div className="border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
+      {/* bottom nav (mobile only) */}
+      <div className="md:hidden border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
         {navItems.map((n) => (
-          <button key={n.id} onClick={n.go}
+          <button key={n.id} onClick={() => navTo(n.id)}
             className={tab === n.id ? "text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}>
             {React.cloneElement(n.icon, { strokeWidth: tab === n.id ? 2.4 : 1.8 })}
           </button>
         ))}
+        {isAdmin && (
+          <button onClick={() => setAdminOpen(true)} className="text-neutral-500 hover:text-neutral-300">
+            <Shield size={26} strokeWidth={1.8} />
+          </button>
+        )}
         <button onClick={() => openProfile(me)}>
           <div className={"rounded-full " + (tab === "profile" ? "ring-2 ring-neutral-100" : "")}>
             <Avatar user={users[me]} size={28} />
@@ -1111,6 +1670,7 @@ export default function App() {
         </button>
       </div>
 
+      {/* overlays */}
       {activePost && (
         <PostModal post={activePost} users={users} me={me}
           onClose={() => setActivePostId(null)} onLike={toggleLike} onComment={addComment}
@@ -1120,9 +1680,17 @@ export default function App() {
         <ListModal title={listModal.title} usernames={listModal.usernames} users={users} me={me}
           onClose={() => setListModal(null)} onOpenProfile={openProfile} onToggleFollow={toggleFollow} />
       )}
-      {editOpen && users[me] && (
-        <EditProfileModal user={users[me]} onClose={() => setEditOpen(false)} onSave={saveProfile} busy={busy} />
+      {editOpen && meUser && (
+        <EditProfileModal user={meUser} onClose={() => setEditOpen(false)} onSave={saveProfile} busy={busy} />
       )}
+      {settingsOpen && meUser && (
+        <SettingsModal user={meUser} onClose={() => setSettingsOpen(false)}
+          onChangeUsername={changeUsername} onChangePassword={changePassword} onLogout={logout} />
+      )}
+      {adminOpen && isAdmin && (
+        <AdminPanel users={users} posts={posts} me={me} onClose={() => setAdminOpen(false)} admin={admin} />
+      )}
+      {notices.length > 0 && <NoticesModal notices={notices} onAck={ackNotices} />}
       <Toast toast={toast} />
     </>
   );
