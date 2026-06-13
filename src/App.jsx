@@ -3,7 +3,7 @@ import {
   Home, Search, PlusSquare, Heart, MessageCircle, Send, Bookmark,
   MoreHorizontal, X, ChevronLeft, LogOut, Camera, LayoutGrid, Trash2,
   RefreshCw, Plus, Lock, Shield, Settings, BadgeCheck, AlertTriangle, Ban, Info,
-  Music, Volume2, VolumeX
+  Music, Volume2, VolumeX, Film
 } from "lucide-react";
 import { supabase, emailForKey, newLoginKey } from "./supabase.js";
 
@@ -40,6 +40,14 @@ function fmtCount(n) {
 
 function banActive(u) {
   return !!(u?.bannedUntil && Date.parse(u.bannedUntil) > Date.now());
+}
+
+// Displayed counts = real + admin boost.
+function shownFollowers(u) {
+  return (u?.followers?.length || 0) + (u?.followerBoost || 0);
+}
+function shownLikes(post) {
+  return (post?.likes?.length || 0) + (post?.likeBoost || 0);
 }
 
 function banLabel(u) {
@@ -131,6 +139,45 @@ async function uploadAudioBlob(blob, path) {
   const { error } = await supabase.storage
     .from("images")
     .upload(path, blob, { upsert: true, contentType: "audio/wav" });
+  if (error) throw error;
+  return supabase.storage.from("images").getPublicUrl(path).data.publicUrl;
+}
+
+// Read a video file's duration and grab a poster frame (for the grid thumbnail).
+function loadVideo(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const v = document.createElement("video");
+    v.preload = "metadata";
+    v.muted = true;
+    v.playsInline = true;
+    v.src = url;
+    const done = (res, err) => { URL.revokeObjectURL(url); err ? reject(err) : resolve(res); };
+    v.onloadedmetadata = () => {
+      const duration = v.duration || 0;
+      // seek a touch in to avoid black first frame
+      v.currentTime = Math.min(0.5, duration / 2);
+    };
+    v.onseeked = () => {
+      try {
+        const scale = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(v.videoWidth * scale));
+        c.height = Math.max(1, Math.round(v.videoHeight * scale));
+        c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+        done({ duration: v.duration || 0, posterDataUrl: c.toDataURL("image/jpeg", 0.8) });
+      } catch {
+        done({ duration: v.duration || 0, posterDataUrl: null });
+      }
+    };
+    v.onerror = () => done(null, new Error("Couldn't read that video. Try a different file."));
+  });
+}
+
+async function uploadFile(file, path) {
+  const { error } = await supabase.storage
+    .from("images")
+    .upload(path, file, { upsert: true, contentType: file.type || "video/mp4" });
   if (error) throw error;
   return supabase.storage.from("images").getPublicUrl(path).data.publicUrl;
 }
@@ -331,28 +378,32 @@ function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, on
   const [menu, setMenu] = useState(false);
   const mediaRef = useRef(null);
   const audioElRef = useRef(null);
+  const videoElRef = useRef(null);
   const [onScreen, setOnScreen] = useState(false);
+  const isVideo = post.mediaType === "video" && post.video;
 
-  // Play audio only while the post is mostly on screen.
+  // Track whether the post is mostly on screen (drives audio + video).
   useEffect(() => {
     const node = mediaRef.current;
-    if (!node || !post.audio) return;
+    if (!node || (!post.audio && !isVideo)) return;
     const obs = new IntersectionObserver(
       ([entry]) => setOnScreen(entry.isIntersecting && entry.intersectionRatio >= 0.6),
       { threshold: [0, 0.6, 1] }
     );
     obs.observe(node);
     return () => obs.disconnect();
-  }, [post.audio]);
+  }, [post.audio, isVideo]);
 
   useEffect(() => {
     const a = audioElRef.current;
-    if (!a) return;
-    a.muted = muted;
-    if (onScreen && !muted) {
-      a.play().catch(() => {});
-    } else {
-      a.pause();
+    if (a) {
+      a.muted = muted;
+      if (onScreen && !muted) a.play().catch(() => {}); else a.pause();
+    }
+    const v = videoElRef.current;
+    if (v) {
+      v.muted = muted;
+      if (onScreen) v.play().catch(() => {}); else v.pause();
     }
   }, [onScreen, muted]);
 
@@ -391,17 +442,26 @@ function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, on
       </div>
 
       <div ref={mediaRef} className="relative bg-neutral-950 select-none" onDoubleClick={doubleTap}>
-        <img src={post.image} alt={post.caption || "post"} className="w-full max-h-[560px] object-contain" draggable={false} loading="lazy" />
-        {post.audio && (
+        {isVideo ? (
+          <video ref={videoElRef} src={post.video} poster={post.image || undefined}
+            loop playsInline muted preload="metadata"
+            onClick={() => onToggleMute()}
+            className="w-full max-h-[560px] object-contain bg-black" />
+        ) : (
+          <img src={post.image} alt={post.caption || "post"} className="w-full max-h-[560px] object-contain" draggable={false} loading="lazy" />
+        )}
+        {post.audio && !isVideo && (
+          <audio ref={audioElRef} src={post.audio} loop preload="none" />
+        )}
+        {(post.audio || isVideo) && (
           <>
-            <audio ref={audioElRef} src={post.audio} loop preload="none" />
             <button onClick={() => onToggleMute()}
               className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 rounded-full p-2 transition-colors">
               {muted ? <VolumeX size={16} className="text-white" /> : <Volume2 size={16} className="text-white" />}
             </button>
             <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 rounded-full px-2.5 py-1">
-              <Music size={11} className="text-white" />
-              <span className="text-white text-[10px] font-medium">audio</span>
+              {isVideo ? <Film size={11} className="text-white" /> : <Music size={11} className="text-white" />}
+              <span className="text-white text-[10px] font-medium">{isVideo ? "video" : "audio"}</span>
             </div>
           </>
         )}
@@ -423,9 +483,9 @@ function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, on
       </div>
 
       <div className="px-3 pt-2 space-y-1">
-        {post.likes.length > 0 && (
+        {shownLikes(post) > 0 && (
           <button onClick={() => onOpenLikes(post)} className="text-sm font-semibold text-neutral-100">
-            {fmtCount(post.likes.length)} {post.likes.length === 1 ? "like" : "likes"}
+            {fmtCount(shownLikes(post))} {shownLikes(post) === 1 ? "like" : "likes"}
           </button>
         )}
         {post.caption && (
@@ -583,8 +643,9 @@ function SearchScreen({ me, users, posts, onOpenProfile, onOpenPost, onToggleFol
           {posts.map((p) => (
             <button key={p.id} onClick={() => onOpenPost(p.id)} className="relative aspect-square bg-neutral-900 overflow-hidden">
               <img src={p.image} alt="" className="w-full h-full object-cover hover:opacity-80 transition-opacity" draggable={false} loading="lazy" />
+              {p.mediaType === "video" && <Film size={15} className="absolute top-1.5 right-1.5 text-white drop-shadow" fill="white" />}
               <div className="absolute bottom-1.5 left-1.5 flex items-center gap-1 text-white text-[11px] font-semibold drop-shadow">
-                <Heart size={11} fill="white" /> {fmtCount(p.likes.length)}
+                <Heart size={11} fill="white" /> {fmtCount(shownLikes(p))}
               </div>
             </button>
           ))}
@@ -600,14 +661,19 @@ function SearchScreen({ me, users, posts, onOpenProfile, onOpenPost, onToggleFol
 /* ------------------------------ create ------------------------------ */
 
 function CreateScreen({ onShare, busy }) {
-  const [image, setImage] = useState(null);
+  const [mode, setMode] = useState(null);      // null | 'image' | 'video'
+  const [image, setImage] = useState(null);    // data URL (photo, or video poster)
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoPreview, setVideoPreview] = useState(null);
   const [caption, setCaption] = useState("");
   const [audioBlob, setAudioBlob] = useState(null);
   const [audioName, setAudioName] = useState(null);
   const [audioPreview, setAudioPreview] = useState(null);
   const [extracting, setExtracting] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [err, setErr] = useState(null);
   const fileRef = useRef(null);
+  const videoFileRef = useRef(null);
   const audioRef = useRef(null);
   const previewRef = useRef(null);
 
@@ -616,8 +682,34 @@ function CreateScreen({ onShare, busy }) {
     e.target.value = "";
     if (!f) return;
     setErr(null);
-    try { setImage(await compressImage(f, 1080, 0.8)); }
+    try { setImage(await compressImage(f, 1080, 0.8)); setMode("image"); }
     catch (x) { setErr(x.message); }
+  };
+
+  const pickVideo = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setErr(null);
+    setChecking(true);
+    try {
+      const info = await loadVideo(f);   // { duration, posterDataUrl }
+      if (info.duration > 60.9) {
+        setErr(`That video is ${Math.round(info.duration)}s. Please pick one up to 60 seconds.`);
+        return;
+      }
+      if (f.size > 50 * 1024 * 1024) {
+        setErr("That video file is over 50MB. Try a shorter or lower-resolution clip.");
+        return;
+      }
+      if (videoPreview) URL.revokeObjectURL(videoPreview);
+      setVideoFile(f);
+      setVideoPreview(URL.createObjectURL(f));
+      setImage(info.posterDataUrl);      // poster used as grid thumbnail
+      setMode("video");
+    } catch (x) {
+      setErr(x.message);
+    } finally { setChecking(false); }
   };
 
   const pickAudio = async (e) => {
@@ -641,16 +733,24 @@ function CreateScreen({ onShare, busy }) {
     setAudioBlob(null); setAudioName(null); setAudioPreview(null);
   };
 
-  const reset = () => { setImage(null); setCaption(""); clearAudio(); };
+  const reset = () => {
+    setMode(null); setImage(null); setCaption(""); clearAudio();
+    if (videoPreview) URL.revokeObjectURL(videoPreview);
+    setVideoFile(null); setVideoPreview(null);
+  };
+
+  const canShare = (mode === "image" && image) || (mode === "video" && videoFile);
 
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center justify-between px-4 h-14">
         <span className="text-neutral-100 font-semibold">New post</span>
         <button
-          disabled={!image || busy || extracting}
+          disabled={!canShare || busy || extracting || checking}
           onClick={async () => {
-            const ok = await onShare(image, caption.trim(), audioBlob);
+            const ok = await onShare({
+              mediaType: mode, image, videoFile, audioBlob, caption: caption.trim(),
+            });
             if (ok) reset();
           }}
           className="text-sky-400 font-semibold text-sm disabled:opacity-40">
@@ -659,19 +759,41 @@ function CreateScreen({ onShare, busy }) {
       </div>
 
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
+      <input ref={videoFileRef} type="file" accept="video/*" className="hidden" onChange={pickVideo} />
       <input ref={audioRef} type="file" accept="video/*,audio/*" className="hidden" onChange={pickAudio} />
 
-      {!image ? (
-        <button onClick={() => fileRef.current?.click()}
-          className="m-4 w-[calc(100%-2rem)] aspect-square max-h-[480px] rounded-2xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors">
-          <Camera size={44} strokeWidth={1.3} />
-          <span className="text-sm font-medium">Tap to choose a photo</span>
-        </button>
+      {!mode ? (
+        <div className="p-4 space-y-3">
+          <button onClick={() => fileRef.current?.click()}
+            className="w-full aspect-square max-h-[360px] rounded-2xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors">
+            <Camera size={44} strokeWidth={1.3} />
+            <span className="text-sm font-medium">Photo</span>
+          </button>
+          <button onClick={() => videoFileRef.current?.click()} disabled={checking}
+            className="w-full rounded-2xl border-2 border-dashed border-neutral-800 flex items-center justify-center gap-3 py-6 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors disabled:opacity-60">
+            <Film size={28} strokeWidth={1.4} />
+            <span className="text-sm font-medium">{checking ? "Checking video…" : "Video (up to 60s)"}</span>
+          </button>
+        </div>
+      ) : mode === "video" ? (
+        <div className="p-4 space-y-3">
+          <div className="relative rounded-2xl overflow-hidden bg-neutral-950">
+            <video src={videoPreview} controls playsInline className="w-full max-h-[480px] object-contain bg-black" />
+            <button onClick={reset}
+              className="absolute top-2 right-2 bg-black/70 rounded-full p-1.5"><X size={16} className="text-white" /></button>
+          </div>
+          <textarea value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Write a caption…"
+            rows={3} maxLength={500}
+            className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3.5 py-3 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600 resize-none" />
+          <div className="text-[11px] text-neutral-600">
+            Videos play automatically (muted) when on screen; tap to unmute. Max 60 seconds.
+          </div>
+        </div>
       ) : (
         <div className="p-4 space-y-3">
           <div className="relative rounded-2xl overflow-hidden bg-neutral-950">
             <img src={image} alt="preview" className="w-full max-h-[480px] object-contain" />
-            <button onClick={() => setImage(null)}
+            <button onClick={reset}
               className="absolute top-2 right-2 bg-black/70 rounded-full p-1.5"><X size={16} className="text-white" /></button>
             {audioBlob && (
               <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-black/70 rounded-full px-3 py-1.5 text-white text-xs">
@@ -680,7 +802,6 @@ function CreateScreen({ onShare, busy }) {
             )}
           </div>
 
-          {/* audio control */}
           {!audioBlob ? (
             <button onClick={() => audioRef.current?.click()} disabled={extracting}
               className="w-full flex items-center justify-center gap-2 bg-neutral-900 border border-neutral-800 rounded-xl py-3 text-sm font-medium text-neutral-200 hover:border-neutral-600 transition-colors disabled:opacity-60">
@@ -705,7 +826,7 @@ function CreateScreen({ onShare, busy }) {
           </div>
         </div>
       )}
-      {err && <div className="text-rose-400 text-xs text-center px-4">{err}</div>}
+      {err && <div className="text-rose-400 text-xs text-center px-4 pb-3">{err}</div>}
     </div>
   );
 }
@@ -745,7 +866,7 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
               <div className="text-xs text-neutral-400">posts</div>
             </div>
             <button onClick={() => onOpenList("Followers", followers)}>
-              <div className="text-lg font-bold text-neutral-100">{fmtCount(followers.length)}</div>
+              <div className="text-lg font-bold text-neutral-100">{fmtCount(shownFollowers(u))}</div>
               <div className="text-xs text-neutral-400">followers</div>
             </button>
             <button onClick={() => onOpenList("Following", following)}>
@@ -804,6 +925,7 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
             {myPosts.map((p) => (
               <button key={p.id} onClick={() => onOpenPost(p.id)} className="relative aspect-square bg-neutral-900 overflow-hidden">
                 <img src={p.image} alt="" className="w-full h-full object-cover hover:opacity-80 transition-opacity" draggable={false} loading="lazy" />
+                {p.mediaType === "video" && <Film size={15} className="absolute top-1.5 right-1.5 text-white drop-shadow" fill="white" />}
               </button>
             ))}
           </div>
@@ -847,7 +969,12 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
           </button>
           <span className="text-xs text-neutral-500">· {timeAgo(post.ts)}</span>
         </div>
-        <img src={post.image} alt="" className="w-full max-h-[480px] object-contain bg-neutral-950" />
+        {post.mediaType === "video" && post.video ? (
+          <video src={post.video} poster={post.image || undefined} controls playsInline loop
+            className="w-full max-h-[480px] object-contain bg-black" />
+        ) : (
+          <img src={post.image} alt="" className="w-full max-h-[480px] object-contain bg-neutral-950" />
+        )}
         <div className="flex items-center gap-4 px-3 pt-3">
           <button onClick={() => onLike(post.id)} className="active:scale-90 transition-transform">
             <Heart size={26} className={liked ? "text-rose-500" : "text-neutral-100"} fill={liked ? "currentColor" : "none"} />
@@ -856,9 +983,9 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
           <Send size={24} className="text-neutral-100" />
         </div>
         <div className="px-3 pt-2 pb-3 space-y-1.5">
-          {post.likes.length > 0 && (
+          {shownLikes(post) > 0 && (
             <button onClick={() => onOpenLikes(post)} className="text-sm font-semibold text-neutral-100">
-              {fmtCount(post.likes.length)} {post.likes.length === 1 ? "like" : "likes"}
+              {fmtCount(shownLikes(post))} {shownLikes(post) === 1 ? "like" : "likes"}
             </button>
           )}
           {post.caption && (
@@ -1104,9 +1231,15 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
   const [amount, setAmount] = useState("24");
   const [unit, setUnit] = useState("hours");
   const [newName, setNewName] = useState("");
+  const [boostInput, setBoostInput] = useState("");
+  const [likeBoostInputs, setLikeBoostInputs] = useState({});
   const [err, setErr] = useState(null);
   const [working, setWorking] = useState(false);
   const [confirmDel, setConfirmDel] = useState(null);
+
+  useEffect(() => {
+    if (sel && users[sel]) setBoostInput(String(users[sel].followerBoost || 0));
+  }, [sel]);
 
   const query = q.trim().toLowerCase();
   const list = Object.values(users)
@@ -1194,7 +1327,7 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
                 <div className="text-base font-bold text-neutral-100"><Uname users={users} u={target.u} size={16} /></div>
                 {target.name && <div className="text-sm text-neutral-400">{target.name}</div>}
                 <div className="text-xs text-neutral-500">
-                  {fmtCount(target.followers.length)} followers · {fmtCount(posts.filter((p) => p.author === target.u).length)} posts
+                  {fmtCount(shownFollowers(target))} followers · {fmtCount(posts.filter((p) => p.author === target.u).length)} posts
                 </div>
               </div>
             </div>
@@ -1219,6 +1352,32 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
                 <ActionBtn label={target.badge === "gold" ? "✓ Gold (active)" : "Give gold check"} onClick={() => admin.setBadge(sel, "gold")} />
                 {target.badge && <ActionBtn label="Remove check" danger onClick={() => admin.setBadge(sel, "")} />}
                 <ActionBtn label={target.staff ? "Remove staff shield" : "Add staff shield"} onClick={() => admin.setStaff(sel, !target.staff)} />
+              </div>
+            </div>
+
+            {/* follower boost */}
+            <div>
+              <div className="text-xs font-semibold text-neutral-500 mb-1">Follower count boost</div>
+              <div className="text-[11px] text-neutral-600 mb-2">
+                Adds to the displayed follower number (no real accounts). Real followers: {fmtCount(target.followers.length)}. Shown: {fmtCount(shownFollowers(target))}.
+              </div>
+              <div className="flex gap-2">
+                <input value={boostInput} onChange={(e) => setBoostInput(e.target.value.replace(/[^0-9]/g, ""))}
+                  type="text" inputMode="numeric" placeholder="e.g. 23000"
+                  className="flex-1 bg-neutral-900 border border-neutral-800 rounded-lg px-3.5 py-2.5 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600" />
+                <button onClick={async () => { setWorking(true); await admin.setFollowerBoost(sel, boostInput); setWorking(false); }}
+                  disabled={working}
+                  className="px-4 py-2 rounded-lg text-xs font-semibold bg-sky-500 hover:bg-sky-400 text-white disabled:opacity-50 transition-colors">
+                  Set
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {[0, 1000, 10000, 23000, 100000, 1000000].map((n) => (
+                  <button key={n} onClick={() => setBoostInput(String(n))}
+                    className="px-2.5 py-1 rounded-md text-[11px] font-semibold bg-neutral-800 text-neutral-300 hover:bg-neutral-700">
+                    {n === 0 ? "clear" : fmtCount(n)}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -1334,7 +1493,7 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
                   <div className="text-xs truncate">
                     {banActive(u)
                       ? <span className="text-rose-400">Banned {banLabel(u)}</span>
-                      : <span className="text-neutral-500">{u.name || `${fmtCount(u.followers.length)} followers`}</span>}
+                      : <span className="text-neutral-500">{u.name || `${fmtCount(shownFollowers(u))} followers`}</span>}
                   </div>
                 </div>
                 <MoreHorizontal size={18} className="text-neutral-600" />
@@ -1346,18 +1505,30 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
           <div>
             {posts.length === 0 && <div className="text-neutral-500 text-sm text-center py-10">No posts.</div>}
             {posts.map((p) => (
-              <div key={p.id} className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-950">
-                <img src={p.image} alt="" className="w-12 h-12 rounded-lg object-cover bg-neutral-900" loading="lazy" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm font-semibold text-neutral-100 truncate">@{p.author}</div>
-                  <div className="text-xs text-neutral-500 truncate">{p.caption || "(no caption)"} · {timeAgo(p.ts)} ago</div>
+              <div key={p.id} className="px-4 py-2.5 border-b border-neutral-950">
+                <div className="flex items-center gap-3">
+                  <img src={p.image} alt="" className="w-12 h-12 rounded-lg object-cover bg-neutral-900" loading="lazy" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-semibold text-neutral-100 truncate">@{p.author}{p.mediaType === "video" ? " · 🎬" : ""}</div>
+                    <div className="text-xs text-neutral-500 truncate">{p.caption || "(no caption)"} · {fmtCount(shownLikes(p))} likes</div>
+                  </div>
+                  {confirmDel === p.id ? (
+                    <button onClick={() => { admin.deletePost(p.id); setConfirmDel(null); }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white">Confirm</button>
+                  ) : (
+                    <button onClick={() => setConfirmDel(p.id)} className="text-rose-400 p-1.5"><Trash2 size={17} /></button>
+                  )}
                 </div>
-                {confirmDel === p.id ? (
-                  <button onClick={() => { admin.deletePost(p.id); setConfirmDel(null); }}
-                    className="px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500 text-white">Confirm</button>
-                ) : (
-                  <button onClick={() => setConfirmDel(p.id)} className="text-rose-400 p-1.5"><Trash2 size={17} /></button>
-                )}
+                <div className="flex items-center gap-2 mt-2">
+                  <span className="text-[11px] text-neutral-500 shrink-0">Like boost:</span>
+                  <input
+                    value={likeBoostInputs[p.id] ?? String(p.likeBoost || 0)}
+                    onChange={(e) => setLikeBoostInputs((m) => ({ ...m, [p.id]: e.target.value.replace(/[^0-9]/g, "") }))}
+                    type="text" inputMode="numeric"
+                    className="w-28 bg-neutral-900 border border-neutral-800 rounded-md px-2.5 py-1.5 text-xs text-neutral-100 outline-none focus:border-neutral-600" />
+                  <button onClick={() => admin.setLikeBoost(p.id, likeBoostInputs[p.id] ?? p.likeBoost)}
+                    className="px-3 py-1.5 rounded-md text-[11px] font-semibold bg-neutral-800 text-neutral-100 hover:bg-neutral-700">Set</button>
+                </div>
               </div>
             ))}
           </div>
@@ -1457,7 +1628,7 @@ export default function App() {
         id: p.id, u: p.username, name: p.name || "", bio: p.bio || "",
         avatar: p.avatar_url || null, followers: [], following: [],
         verified: !!p.verified, badge: p.badge || (p.verified ? "blue" : ""),
-        staff: !!p.staff, isAdmin: !!p.is_admin,
+        staff: !!p.staff, isAdmin: !!p.is_admin, followerBoost: p.follower_boost || 0,
         bannedUntil: p.banned_until || null, banReason: p.ban_reason || null,
       };
     });
@@ -1476,6 +1647,9 @@ export default function App() {
         caption: r.caption || "",
         image: r.image_url,
         audio: r.audio_url || null,
+        mediaType: r.media_type || "image",
+        video: r.video_url || null,
+        likeBoost: r.like_boost || 0,
         ts: Date.parse(r.created_at),
         likes: (r.likes || []).map((l) => byId[l.user_id]?.username).filter(Boolean),
         comments: (r.comments || [])
@@ -1569,22 +1743,37 @@ export default function App() {
     setRefreshing(false);
   };
 
-  const sharePost = async (imageDataUrl, caption, audioBlob) => {
+  const sharePost = async ({ mediaType, image, videoFile, audioBlob, caption }) => {
     setBusy(true);
     try {
       const meId = session.user.id;
       const stem = `${meId}/${newId()}`;
-      const publicUrl = await uploadDataUrl(imageDataUrl, stem + ".jpg");
-      let audioUrl = null;
-      if (audioBlob) audioUrl = await uploadAudioBlob(audioBlob, stem + ".wav");
+      let imageUrl = null, videoUrl = null, audioUrl = null;
+
+      if (mediaType === "video") {
+        videoUrl = await uploadFile(videoFile, stem + "-vid." + (videoFile.name.split(".").pop() || "mp4"));
+        if (image) imageUrl = await uploadDataUrl(image, stem + ".jpg"); // poster
+      } else {
+        imageUrl = await uploadDataUrl(image, stem + ".jpg");
+        if (audioBlob) audioUrl = await uploadAudioBlob(audioBlob, stem + ".wav");
+      }
+
       const { data, error } = await supabase
         .from("posts")
-        .insert({ author: meId, caption, image_url: publicUrl, audio_url: audioUrl })
+        .insert({
+          author: meId, caption,
+          image_url: imageUrl || videoUrl, // never null
+          audio_url: audioUrl,
+          media_type: mediaType,
+          video_url: videoUrl,
+        })
         .select()
         .single();
       if (error) { showToast("Couldn't share: " + error.message); return false; }
       setPosts((ps) => [{
-        id: data.id, author: me, caption, image: publicUrl, audio: audioUrl,
+        id: data.id, author: me, caption,
+        image: imageUrl || videoUrl, audio: audioUrl,
+        mediaType, video: videoUrl, likeBoost: 0,
         likes: [], comments: [], ts: Date.parse(data.created_at),
       }, ...ps]);
       setTab("profile"); setProfileUser(me);
@@ -1815,6 +2004,22 @@ export default function App() {
       await fetchAll();
       setProfileUser((p) => (p === u ? newU : p));
       showToast(`@${u} → @${newU}`);
+      return null;
+    },
+    setFollowerBoost: async (u, n) => {
+      const val = Math.max(0, Math.floor(Number(n) || 0));
+      const e = await adminUpdate(u, { follower_boost: val });
+      if (e) { showToast(e); return e; }
+      await fetchAll();
+      showToast(`@${u} follower boost set to ${fmtCount(val)}`);
+      return null;
+    },
+    setLikeBoost: async (postId, n) => {
+      const val = Math.max(0, Math.floor(Number(n) || 0));
+      const { error } = await supabase.from("posts").update({ like_boost: val }).eq("id", postId);
+      if (error) { showToast(error.message); return error.message; }
+      setPosts((ps) => ps.map((p) => (p.id === postId ? { ...p, likeBoost: val } : p)));
+      showToast(`Like boost set to ${fmtCount(val)}`);
       return null;
     },
     deletePost,
