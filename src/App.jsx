@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import {
   Home, Search, PlusSquare, Heart, MessageCircle, Send, Bookmark,
   MoreHorizontal, X, ChevronLeft, LogOut, Camera, LayoutGrid, Trash2,
-  RefreshCw, Plus, Lock, Shield, Settings, BadgeCheck, AlertTriangle, Ban, Info
+  RefreshCw, Plus, Lock, Shield, Settings, BadgeCheck, AlertTriangle, Ban, Info,
+  Music, Volume2, VolumeX
 } from "lucide-react";
 import { supabase, emailForKey, newLoginKey } from "./supabase.js";
 
@@ -80,6 +81,60 @@ async function uploadDataUrl(dataUrl, path) {
   return supabase.storage.from("images").getPublicUrl(path).data.publicUrl;
 }
 
+// Decode a video/audio file, then re-encode just the audio track to a WAV blob.
+// Runs entirely in the browser via Web Audio — no server, no ffmpeg.
+async function extractAudio(file, maxSeconds = 90) {
+  const buf = await file.arrayBuffer();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  let decoded;
+  try {
+    decoded = await ctx.decodeAudioData(buf);
+  } catch {
+    ctx.close();
+    throw new Error("Couldn't read audio from that file. Try a different video.");
+  }
+  ctx.close();
+
+  const sampleRate = decoded.sampleRate;
+  const channels = Math.min(2, decoded.numberOfChannels);
+  const frames = Math.min(decoded.length, Math.floor(maxSeconds * sampleRate));
+  if (frames <= 0) throw new Error("That file has no audio track.");
+
+  // Interleave to 16-bit PCM
+  const chans = [];
+  for (let c = 0; c < channels; c++) chans.push(decoded.getChannelData(c));
+  const bytesPerSample = 2;
+  const blockAlign = channels * bytesPerSample;
+  const dataLen = frames * blockAlign;
+  const out = new DataView(new ArrayBuffer(44 + dataLen));
+
+  const w = (off, s) => { for (let i = 0; i < s.length; i++) out.setUint8(off + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); out.setUint32(4, 36 + dataLen, true); w(8, "WAVE");
+  w(12, "fmt "); out.setUint32(16, 16, true); out.setUint16(20, 1, true);
+  out.setUint16(22, channels, true); out.setUint32(24, sampleRate, true);
+  out.setUint32(28, sampleRate * blockAlign, true); out.setUint16(32, blockAlign, true);
+  out.setUint16(34, 16, true); w(36, "data"); out.setUint32(40, dataLen, true);
+
+  let off = 44;
+  for (let i = 0; i < frames; i++) {
+    for (let c = 0; c < channels; c++) {
+      let s = Math.max(-1, Math.min(1, chans[c][i]));
+      out.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      off += 2;
+    }
+  }
+  return new Blob([out.buffer], { type: "audio/wav" });
+}
+
+async function uploadAudioBlob(blob, path) {
+  const { error } = await supabase.storage
+    .from("images")
+    .upload(path, blob, { upsert: true, contentType: "audio/wav" });
+  if (error) throw error;
+  return supabase.storage.from("images").getPublicUrl(path).data.publicUrl;
+}
+
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 /* ============================ tiny pieces ============================ */
@@ -109,10 +164,14 @@ function Avatar({ user, size = 40, ring = false, onClick }) {
 }
 
 function Uname({ users, u, size = 14, className = "" }) {
+  const user = users[u];
+  const badge = user?.badge || (user?.verified ? "blue" : "");
   return (
     <span className={"inline-flex items-center gap-1 min-w-0 " + className}>
       <span className="truncate">{u}</span>
-      {users[u]?.verified && <BadgeCheck size={size} className="shrink-0" color="white" fill="#0095f6" />}
+      {badge === "gold" && <BadgeCheck size={size} className="shrink-0" color="#1a1a1a" fill="#f5b50a" />}
+      {badge === "blue" && <BadgeCheck size={size} className="shrink-0" color="white" fill="#0095f6" />}
+      {user?.staff && <Shield size={size - 1} className="shrink-0" color="white" fill="#9333ea" />}
     </span>
   );
 }
@@ -264,12 +323,38 @@ function BannedScreen({ user, onLogout }) {
 
 /* ------------------------------ feed post ------------------------------ */
 
-function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggleFollow, onOpenLikes, onDelete }) {
+function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onToggleFollow, onOpenLikes, onDelete }) {
   const author = users[post.author];
   const liked = post.likes.includes(me);
-  const canModerate = post.author === me || me === "admin";
+  const canModerate = post.author === me || users[me]?.isAdmin;
   const [burst, setBurst] = useState(false);
   const [menu, setMenu] = useState(false);
+  const mediaRef = useRef(null);
+  const audioElRef = useRef(null);
+  const [onScreen, setOnScreen] = useState(false);
+
+  // Play audio only while the post is mostly on screen.
+  useEffect(() => {
+    const node = mediaRef.current;
+    if (!node || !post.audio) return;
+    const obs = new IntersectionObserver(
+      ([entry]) => setOnScreen(entry.isIntersecting && entry.intersectionRatio >= 0.6),
+      { threshold: [0, 0.6, 1] }
+    );
+    obs.observe(node);
+    return () => obs.disconnect();
+  }, [post.audio]);
+
+  useEffect(() => {
+    const a = audioElRef.current;
+    if (!a) return;
+    a.muted = muted;
+    if (onScreen && !muted) {
+      a.play().catch(() => {});
+    } else {
+      a.pause();
+    }
+  }, [onScreen, muted]);
 
   const doubleTap = () => {
     if (!liked) onLike(post.id);
@@ -305,8 +390,21 @@ function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggle
         )}
       </div>
 
-      <div className="relative bg-neutral-950 select-none" onDoubleClick={doubleTap}>
+      <div ref={mediaRef} className="relative bg-neutral-950 select-none" onDoubleClick={doubleTap}>
         <img src={post.image} alt={post.caption || "post"} className="w-full max-h-[560px] object-contain" draggable={false} loading="lazy" />
+        {post.audio && (
+          <>
+            <audio ref={audioElRef} src={post.audio} loop preload="none" />
+            <button onClick={() => onToggleMute()}
+              className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 rounded-full p-2 transition-colors">
+              {muted ? <VolumeX size={16} className="text-white" /> : <Volume2 size={16} className="text-white" />}
+            </button>
+            <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 rounded-full px-2.5 py-1">
+              <Music size={11} className="text-white" />
+              <span className="text-white text-[10px] font-medium">audio</span>
+            </div>
+          </>
+        )}
         {burst && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <Heart size={96} className="text-white drop-shadow-lg animate-ping" fill="white" />
@@ -352,6 +450,7 @@ function FeedPost({ post, users, me, onLike, onOpenPost, onOpenProfile, onToggle
 /* ------------------------------ home ------------------------------ */
 
 function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshing, ...actions }) {
+  const [muted, setMuted] = useState(true);
   const meUser = users[me];
   const following = meUser?.following || [];
   const feedPosts = feedTab === "following"
@@ -434,7 +533,7 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
           )}
         </div>
       ) : (
-        feedPosts.map((p) => <FeedPost key={p.id} post={p} users={users} me={me} {...actions} />)
+        feedPosts.map((p) => <FeedPost key={p.id} post={p} users={users} me={me} muted={muted} onToggleMute={() => setMuted((m) => !m)} {...actions} />)
       )}
       <div className="h-4" />
     </div>
@@ -503,8 +602,14 @@ function SearchScreen({ me, users, posts, onOpenProfile, onOpenPost, onToggleFol
 function CreateScreen({ onShare, busy }) {
   const [image, setImage] = useState(null);
   const [caption, setCaption] = useState("");
+  const [audioBlob, setAudioBlob] = useState(null);
+  const [audioName, setAudioName] = useState(null);
+  const [audioPreview, setAudioPreview] = useState(null);
+  const [extracting, setExtracting] = useState(false);
   const [err, setErr] = useState(null);
   const fileRef = useRef(null);
+  const audioRef = useRef(null);
+  const previewRef = useRef(null);
 
   const pick = async (e) => {
     const f = e.target.files?.[0];
@@ -515,15 +620,38 @@ function CreateScreen({ onShare, busy }) {
     catch (x) { setErr(x.message); }
   };
 
+  const pickAudio = async (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f) return;
+    setErr(null);
+    setExtracting(true);
+    try {
+      const blob = await extractAudio(f, 90);
+      setAudioBlob(blob);
+      setAudioName(f.name);
+      setAudioPreview((prev) => { if (prev) URL.revokeObjectURL(prev); return URL.createObjectURL(blob); });
+    } catch (x) {
+      setErr(x.message);
+    } finally { setExtracting(false); }
+  };
+
+  const clearAudio = () => {
+    if (audioPreview) URL.revokeObjectURL(audioPreview);
+    setAudioBlob(null); setAudioName(null); setAudioPreview(null);
+  };
+
+  const reset = () => { setImage(null); setCaption(""); clearAudio(); };
+
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center justify-between px-4 h-14">
         <span className="text-neutral-100 font-semibold">New post</span>
         <button
-          disabled={!image || busy}
+          disabled={!image || busy || extracting}
           onClick={async () => {
-            const ok = await onShare(image, caption.trim());
-            if (ok) { setImage(null); setCaption(""); }
+            const ok = await onShare(image, caption.trim(), audioBlob);
+            if (ok) reset();
           }}
           className="text-sky-400 font-semibold text-sm disabled:opacity-40">
           {busy ? "Sharing…" : "Share"}
@@ -531,6 +659,7 @@ function CreateScreen({ onShare, busy }) {
       </div>
 
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
+      <input ref={audioRef} type="file" accept="video/*,audio/*" className="hidden" onChange={pickAudio} />
 
       {!image ? (
         <button onClick={() => fileRef.current?.click()}
@@ -544,13 +673,39 @@ function CreateScreen({ onShare, busy }) {
             <img src={image} alt="preview" className="w-full max-h-[480px] object-contain" />
             <button onClick={() => setImage(null)}
               className="absolute top-2 right-2 bg-black/70 rounded-full p-1.5"><X size={16} className="text-white" /></button>
+            {audioBlob && (
+              <div className="absolute bottom-2 left-2 flex items-center gap-1.5 bg-black/70 rounded-full px-3 py-1.5 text-white text-xs">
+                <Music size={13} /> Audio added
+              </div>
+            )}
           </div>
+
+          {/* audio control */}
+          {!audioBlob ? (
+            <button onClick={() => audioRef.current?.click()} disabled={extracting}
+              className="w-full flex items-center justify-center gap-2 bg-neutral-900 border border-neutral-800 rounded-xl py-3 text-sm font-medium text-neutral-200 hover:border-neutral-600 transition-colors disabled:opacity-60">
+              <Music size={17} />
+              {extracting ? "Extracting audio…" : "Add audio (from a video or audio file)"}
+            </button>
+          ) : (
+            <div className="flex items-center gap-3 bg-neutral-900 border border-neutral-800 rounded-xl px-3.5 py-2.5">
+              <button onClick={() => { const a = previewRef.current; if (a) { a.paused ? a.play() : a.pause(); } }}
+                className="text-sky-400 shrink-0"><Volume2 size={18} /></button>
+              <span className="text-xs text-neutral-300 truncate flex-1">{audioName}</span>
+              <audio ref={previewRef} src={audioPreview} className="hidden" />
+              <button onClick={clearAudio} className="text-neutral-500 hover:text-rose-400 shrink-0"><X size={16} /></button>
+            </div>
+          )}
+
           <textarea value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Write a caption…"
             rows={3} maxLength={500}
             className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-3.5 py-3 text-sm text-neutral-100 placeholder-neutral-500 outline-none focus:border-neutral-600 resize-none" />
+          <div className="text-[11px] text-neutral-600">
+            Audio plays automatically when your post is on screen and stops when it scrolls away. We use just the sound from the video you pick (up to 90s).
+          </div>
         </div>
       )}
-      {err && <div className="text-rose-400 text-xs text-center">{err}</div>}
+      {err && <div className="text-rose-400 text-xs text-center px-4">{err}</div>}
     </div>
   );
 }
@@ -664,7 +819,7 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
   const [text, setText] = useState("");
   const liked = post.likes.includes(me);
   const author = users[post.author];
-  const canModerate = post.author === me || me === "admin";
+  const canModerate = post.author === me || users[me]?.isAdmin;
 
   const send = () => {
     const t = text.trim();
@@ -1049,21 +1204,54 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
                 Banned {banLabel(target)}.{target.banReason ? ` Reason: ${target.banReason}` : ""}
               </div>
             )}
+            {target.u === "admin" && (
+              <div className="bg-sky-500/10 border border-sky-500/30 rounded-lg px-4 py-3 text-sm text-sky-300">
+                This is the owner account — protected and can't be moderated.
+              </div>
+            )}
             {target.bio && <div className="text-sm text-neutral-300 bg-neutral-900 rounded-lg px-4 py-3">Bio: {target.bio}</div>}
 
-            <div className="flex flex-wrap gap-2">
-              <ActionBtn label={target.verified ? "Remove verification" : "Verify ✓"} onClick={() => admin.verify(sel, !target.verified)} />
-              <ActionBtn label="Warn" onClick={() => openForm("warn")} />
-              {banActive(target)
-                ? <ActionBtn label="Unban" onClick={() => admin.unban(sel)} />
-                : <>
-                  <ActionBtn label="Temp ban" danger onClick={() => openForm("tempban")} />
-                  <ActionBtn label="Permanent ban" danger onClick={() => openForm("permban")} />
-                </>}
-              {target.avatar && <ActionBtn label="Remove photo" danger onClick={() => admin.clearAvatar(sel)} />}
-              {target.bio && <ActionBtn label="Clear bio" danger onClick={() => admin.clearBio(sel)} />}
-              <ActionBtn label="Change username" onClick={() => openForm("rename")} />
+            {/* verification badges */}
+            <div>
+              <div className="text-xs font-semibold text-neutral-500 mb-2">Verification</div>
+              <div className="flex flex-wrap gap-2">
+                <ActionBtn label={target.badge === "blue" ? "✓ Blue (active)" : "Give blue check"} onClick={() => admin.setBadge(sel, "blue")} />
+                <ActionBtn label={target.badge === "gold" ? "✓ Gold (active)" : "Give gold check"} onClick={() => admin.setBadge(sel, "gold")} />
+                {target.badge && <ActionBtn label="Remove check" danger onClick={() => admin.setBadge(sel, "")} />}
+                <ActionBtn label={target.staff ? "Remove staff shield" : "Add staff shield"} onClick={() => admin.setStaff(sel, !target.staff)} />
+              </div>
             </div>
+
+            {/* admin access (owner only) */}
+            {admin.isRoot && target.u !== "admin" && (
+              <div>
+                <div className="text-xs font-semibold text-neutral-500 mb-2">Admin access</div>
+                <div className="flex flex-wrap gap-2">
+                  {target.isAdmin
+                    ? <ActionBtn label="Remove admin access" danger onClick={() => admin.revokeAdmin(sel)} />
+                    : <ActionBtn label="Grant admin access" onClick={() => admin.grantAdmin(sel)} />}
+                </div>
+              </div>
+            )}
+
+            {/* moderation */}
+            {target.u !== "admin" && (
+              <div>
+                <div className="text-xs font-semibold text-neutral-500 mb-2">Moderation</div>
+                <div className="flex flex-wrap gap-2">
+                  <ActionBtn label="Warn" onClick={() => openForm("warn")} />
+                  {banActive(target)
+                    ? <ActionBtn label="Unban" onClick={() => admin.unban(sel)} />
+                    : <>
+                      <ActionBtn label="Temp ban" danger onClick={() => openForm("tempban")} />
+                      <ActionBtn label="Permanent ban" danger onClick={() => openForm("permban")} />
+                    </>}
+                  {target.avatar && <ActionBtn label="Remove photo" danger onClick={() => admin.clearAvatar(sel)} />}
+                  {target.bio && <ActionBtn label="Clear bio" danger onClick={() => admin.clearBio(sel)} />}
+                  <ActionBtn label="Change username" onClick={() => openForm("rename")} />
+                </div>
+              </div>
+            )}
 
             {form && (
               <div className="bg-neutral-950 border border-neutral-800 rounded-xl p-4 space-y-3">
@@ -1116,6 +1304,19 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
         ) : view === "users" ? (
           /* ---------- user list ---------- */
           <div>
+            {/* your own badge / shield */}
+            <div className="mx-4 mt-3 mb-1 bg-neutral-950 border border-neutral-800 rounded-xl p-3.5">
+              <div className="flex items-center gap-2.5 mb-2.5">
+                <Avatar user={users[me]} size={32} />
+                <div className="text-sm font-semibold text-neutral-100">Your badges (@{me})</div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <ActionBtn label={users[me]?.badge === "blue" ? "✓ Blue" : "Blue check"} onClick={() => admin.setBadge(me, "blue")} />
+                <ActionBtn label={users[me]?.badge === "gold" ? "✓ Gold" : "Gold check"} onClick={() => admin.setBadge(me, "gold")} />
+                {users[me]?.badge && <ActionBtn label="Remove" danger onClick={() => admin.setBadge(me, "")} />}
+                <ActionBtn label={users[me]?.staff ? "Shield on" : "Shield"} onClick={() => admin.setStaff(me, !users[me]?.staff)} />
+              </div>
+            </div>
             <div className="px-4 pt-3 pb-2">
               <div className="flex items-center gap-2 bg-neutral-900 rounded-full px-4 py-2.5">
                 <Search size={16} className="text-neutral-500" />
@@ -1255,7 +1456,9 @@ export default function App() {
       map[p.username] = {
         id: p.id, u: p.username, name: p.name || "", bio: p.bio || "",
         avatar: p.avatar_url || null, followers: [], following: [],
-        verified: !!p.verified, bannedUntil: p.banned_until || null, banReason: p.ban_reason || null,
+        verified: !!p.verified, badge: p.badge || (p.verified ? "blue" : ""),
+        staff: !!p.staff, isAdmin: !!p.is_admin,
+        bannedUntil: p.banned_until || null, banReason: p.ban_reason || null,
       };
     });
     follows.forEach((f) => {
@@ -1272,6 +1475,7 @@ export default function App() {
         author: byId[r.author]?.username,
         caption: r.caption || "",
         image: r.image_url,
+        audio: r.audio_url || null,
         ts: Date.parse(r.created_at),
         likes: (r.likes || []).map((l) => byId[l.user_id]?.username).filter(Boolean),
         comments: (r.comments || [])
@@ -1296,7 +1500,7 @@ export default function App() {
     return found ? found.u : null;
   }, [session, users]);
 
-  const isAdmin = me === "admin";
+  const isAdmin = !!users[me]?.isAdmin;
 
   useEffect(() => {
     if (authReady && dataReady && session && !me && !busy) supabase.auth.signOut();
@@ -1365,20 +1569,22 @@ export default function App() {
     setRefreshing(false);
   };
 
-  const sharePost = async (imageDataUrl, caption) => {
+  const sharePost = async (imageDataUrl, caption, audioBlob) => {
     setBusy(true);
     try {
       const meId = session.user.id;
-      const path = `${meId}/${newId()}.jpg`;
-      const publicUrl = await uploadDataUrl(imageDataUrl, path);
+      const stem = `${meId}/${newId()}`;
+      const publicUrl = await uploadDataUrl(imageDataUrl, stem + ".jpg");
+      let audioUrl = null;
+      if (audioBlob) audioUrl = await uploadAudioBlob(audioBlob, stem + ".wav");
       const { data, error } = await supabase
         .from("posts")
-        .insert({ author: meId, caption, image_url: publicUrl })
+        .insert({ author: meId, caption, image_url: publicUrl, audio_url: audioUrl })
         .select()
         .single();
       if (error) { showToast("Couldn't share: " + error.message); return false; }
       setPosts((ps) => [{
-        id: data.id, author: me, caption, image: publicUrl,
+        id: data.id, author: me, caption, image: publicUrl, audio: audioUrl,
         likes: [], comments: [], ts: Date.parse(data.created_at),
       }, ...ps]);
       setTab("profile"); setProfileUser(me);
@@ -1511,13 +1717,41 @@ export default function App() {
     return error ? error.message : null;
   };
 
+  const isRoot = me === "admin";
+
   const admin = {
-    verify: async (u, val) => {
-      const e = await adminUpdate(u, { verified: val });
+    setBadge: async (u, tier) => {
+      const e = await adminUpdate(u, { badge: tier, verified: tier !== "" });
       if (e) { showToast(e); return e; }
-      if (val) await sendNotice(u, "info", "Your account is now verified ✓");
+      if (tier) await sendNotice(u, "info", `Your account is now verified with a ${tier} check ✓`);
+      else await sendNotice(u, "info", "Your verification badge was removed.");
       await fetchAll();
-      showToast(val ? "@" + u + " verified" : "Verification removed");
+      showToast(tier ? `@${u} given ${tier} check` : "Badge removed");
+      return null;
+    },
+    setStaff: async (u, val) => {
+      const e = await adminUpdate(u, { staff: val });
+      if (e) { showToast(e); return e; }
+      await fetchAll();
+      showToast(val ? `@${u} marked as staff` : "Staff badge removed");
+      return null;
+    },
+    grantAdmin: async (u) => {
+      if (!isRoot) return "Only the owner can grant admin access.";
+      const e = await adminUpdate(u, { is_admin: true });
+      if (e) { showToast(e); return e; }
+      await sendNotice(u, "info", "You've been given admin access on Grambie. The Shield tab is now in your menu.");
+      await fetchAll();
+      showToast(`@${u} is now an admin`);
+      return null;
+    },
+    revokeAdmin: async (u) => {
+      if (!isRoot) return "Only the owner can remove admin access.";
+      const e = await adminUpdate(u, { is_admin: false });
+      if (e) { showToast(e); return e; }
+      await sendNotice(u, "info", "Your admin access on Grambie has been removed.");
+      await fetchAll();
+      showToast(`@${u} is no longer an admin`);
       return null;
     },
     warn: async (u, reason) => {
@@ -1526,6 +1760,7 @@ export default function App() {
       return null;
     },
     ban: async (u, hours, reason) => {
+      if (u === "admin") { showToast("The owner account can't be banned."); return "protected"; }
       const until = hours == null ? PERM_BAN : new Date(Date.now() + hours * 3600 * 1000).toISOString();
       const e = await adminUpdate(u, { banned_until: until, ban_reason: reason });
       if (e) return e;
@@ -1545,6 +1780,7 @@ export default function App() {
       return null;
     },
     clearAvatar: async (u) => {
+      if (u === "admin") { showToast("The owner account is protected."); return "protected"; }
       const e = await adminUpdate(u, { avatar_url: null });
       if (e) { showToast(e); return e; }
       await sendNotice(u, "info", "Your profile photo was removed by a moderator.");
@@ -1553,6 +1789,7 @@ export default function App() {
       return null;
     },
     clearBio: async (u) => {
+      if (u === "admin") { showToast("The owner account is protected."); return "protected"; }
       const e = await adminUpdate(u, { bio: "" });
       if (e) { showToast(e); return e; }
       await sendNotice(u, "info", "Your bio was removed by a moderator.");
@@ -1561,9 +1798,11 @@ export default function App() {
       return null;
     },
     rename: async (u, newU, reason) => {
+      if (u === "admin") { showToast("The owner account can't be renamed."); return "The owner account is protected."; }
       const err = usernameError(newU);
       if (err) return err;
       if (newU === u) return "That's already their username.";
+      if (newU === "admin") return "That username is reserved.";
       if (users[newU]) return "That username is taken.";
       const targetId = users[u]?.id;
       if (!targetId) return "User not found.";
@@ -1579,6 +1818,7 @@ export default function App() {
       return null;
     },
     deletePost,
+    isRoot,
   };
 
   /* ----- navigation ----- */
@@ -1651,7 +1891,7 @@ export default function App() {
       )}
 
       {/* bottom nav (mobile only) */}
-      <div className="border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
+      <div className="md:hidden border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0">
         {navItems.map((n) => (
           <button key={n.id} onClick={() => navTo(n.id)}
             className={tab === n.id ? "text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}>
