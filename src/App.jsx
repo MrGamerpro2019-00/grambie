@@ -370,42 +370,74 @@ function BannedScreen({ user, onLogout }) {
 
 /* ------------------------------ feed post ------------------------------ */
 
-function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onToggleFollow, onOpenLikes, onDelete }) {
-  const author = users[post.author];
-  const liked = post.likes.includes(me);
-  const canModerate = post.author === me || users[me]?.isAdmin;
-  const [burst, setBurst] = useState(false);
-  const [menu, setMenu] = useState(false);
-  const mediaRef = useRef(null);
+/* ------------------------------ post media (shared) ------------------------------ */
+
+function PostMedia({ post, muted, onToggleMute, onDoubleClick, maxH = "max-h-[560px]", active = true }) {
+  const ref = useRef(null);
   const audioElRef = useRef(null);
   const videoElRef = useRef(null);
   const [onScreen, setOnScreen] = useState(false);
   const isVideo = post.mediaType === "video" && post.video;
 
-  // Track whether the post is mostly on screen (drives audio + video).
   useEffect(() => {
-    const node = mediaRef.current;
-    if (!node || (!post.audio && !isVideo)) return;
+    const node = ref.current;
+    if (!node || (!post.audio && !isVideo) || !active) { setOnScreen(false); return; }
     const obs = new IntersectionObserver(
       ([entry]) => setOnScreen(entry.isIntersecting && entry.intersectionRatio >= 0.6),
       { threshold: [0, 0.6, 1] }
     );
     obs.observe(node);
     return () => obs.disconnect();
-  }, [post.audio, isVideo]);
+  }, [post.audio, isVideo, active]);
 
   useEffect(() => {
     const a = audioElRef.current;
     if (a) {
       a.muted = muted;
-      if (onScreen && !muted) a.play().catch(() => {}); else a.pause();
+      if (onScreen && active && !muted) a.play().catch(() => {}); else a.pause();
     }
     const v = videoElRef.current;
     if (v) {
       v.muted = muted;
-      if (onScreen) v.play().catch(() => {}); else v.pause();
+      if (onScreen && active) v.play().catch(() => {}); else v.pause();
     }
-  }, [onScreen, muted]);
+  }, [onScreen, muted, active]);
+
+  return (
+    <div ref={ref} className="relative bg-neutral-950 select-none" onDoubleClick={onDoubleClick}>
+      {isVideo ? (
+        <video ref={videoElRef} src={post.video} poster={post.image || undefined}
+          loop playsInline muted preload="metadata"
+          onClick={() => onToggleMute && onToggleMute()}
+          className={"w-full object-contain bg-black " + maxH} />
+      ) : (
+        <img src={post.image} alt={post.caption || "post"} className={"w-full object-contain " + maxH} draggable={false} loading="lazy" />
+      )}
+      {post.audio && !isVideo && <audio ref={audioElRef} src={post.audio} loop preload="none" />}
+      {(post.audio || isVideo) && (
+        <>
+          <button onClick={() => onToggleMute && onToggleMute()}
+            className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 rounded-full p-2 transition-colors">
+            {muted ? <VolumeX size={16} className="text-white" /> : <Volume2 size={16} className="text-white" />}
+          </button>
+          <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 rounded-full px-2.5 py-1">
+            {isVideo ? <Film size={11} className="text-white" /> : <Music size={11} className="text-white" />}
+            <span className="text-white text-[10px] font-medium">{isVideo ? "video" : "audio"}</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ feed post ------------------------------ */
+
+function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onToggleFollow, onOpenLikes, onDelete }) {
+  const author = users[post.author];
+  const liked = post.likes.includes(me);
+  const canModerate = post.author === me || users[me]?.isAdmin;
+  const [burst, setBurst] = useState(false);
+  const [menu, setMenu] = useState(false);
 
   const doubleTap = () => {
     if (!liked) onLike(post.id);
@@ -441,30 +473,8 @@ function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, on
         )}
       </div>
 
-      <div ref={mediaRef} className="relative bg-neutral-950 select-none" onDoubleClick={doubleTap}>
-        {isVideo ? (
-          <video ref={videoElRef} src={post.video} poster={post.image || undefined}
-            loop playsInline muted preload="metadata"
-            onClick={() => onToggleMute()}
-            className="w-full max-h-[560px] object-contain bg-black" />
-        ) : (
-          <img src={post.image} alt={post.caption || "post"} className="w-full max-h-[560px] object-contain" draggable={false} loading="lazy" />
-        )}
-        {post.audio && !isVideo && (
-          <audio ref={audioElRef} src={post.audio} loop preload="none" />
-        )}
-        {(post.audio || isVideo) && (
-          <>
-            <button onClick={() => onToggleMute()}
-              className="absolute bottom-2 right-2 bg-black/60 hover:bg-black/80 rounded-full p-2 transition-colors">
-              {muted ? <VolumeX size={16} className="text-white" /> : <Volume2 size={16} className="text-white" />}
-            </button>
-            <div className="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 rounded-full px-2.5 py-1">
-              {isVideo ? <Film size={11} className="text-white" /> : <Music size={11} className="text-white" />}
-              <span className="text-white text-[10px] font-medium">{isVideo ? "video" : "audio"}</span>
-            </div>
-          </>
-        )}
+      <div className="relative">
+        <PostMedia post={post} muted={muted} onToggleMute={onToggleMute} onDoubleClick={doubleTap} />
         {burst && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <Heart size={96} className="text-white drop-shadow-lg animate-ping" fill="white" />
@@ -509,7 +519,7 @@ function FeedPost({ post, users, me, muted, onToggleMute, onLike, onOpenPost, on
 
 /* ------------------------------ home ------------------------------ */
 
-function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshing, ...actions }) {
+function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshing, hasStory, unseenActivity, onOpenActivity, onOpenStory, onAddStory, ...actions }) {
   const [muted, setMuted] = useState(true);
   const meUser = users[me];
   const following = meUser?.following || [];
@@ -533,7 +543,14 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
             <button onClick={onRefresh} className={refreshing ? "animate-spin" : ""}>
               <RefreshCw size={21} className="text-neutral-100" />
             </button>
-            <Heart size={24} className="text-neutral-100" />
+            <button onClick={onOpenActivity} className="relative">
+              <Heart size={24} className="text-neutral-100" />
+              {unseenActivity > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 rounded-full bg-rose-500 text-white text-[10px] font-bold flex items-center justify-center">
+                  {unseenActivity > 9 ? "9+" : unseenActivity}
+                </span>
+              )}
+            </button>
           </div>
         </div>
         <div className="flex px-4 gap-6 text-sm font-semibold">
@@ -549,17 +566,25 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
       <div className="flex gap-4 px-4 py-3 overflow-x-auto border-b border-neutral-900">
         <div className="flex flex-col items-center gap-1.5 w-[68px] shrink-0">
           <div className="relative">
-            <Avatar user={meUser} size={56} onClick={() => actions.onOpenProfile(me)} />
-            <div className="absolute -bottom-0.5 -right-0.5 bg-sky-500 rounded-full p-[3px] border-2 border-black">
+            <Avatar user={meUser} size={56} ring={hasStory(me)}
+              onClick={() => (hasStory(me) ? onOpenStory(me) : onAddStory())} />
+            <button onClick={onAddStory}
+              className="absolute -bottom-0.5 -right-0.5 bg-sky-500 rounded-full p-[3px] border-2 border-black">
               <Plus size={10} className="text-white" strokeWidth={3.5} />
-            </div>
+            </button>
           </div>
           <span className="text-[11px] text-neutral-400 truncate w-full text-center">Your story</span>
         </div>
-        {storyUsers.slice(1).map((u) => (
+        {storyUsers.slice(1).filter((u) => hasStory(u.u)).map((u) => (
           <div key={u.u} className="flex flex-col items-center gap-1.5 w-[68px] shrink-0">
-            <Avatar user={u} size={56} ring onClick={() => actions.onOpenProfile(u.u)} />
+            <Avatar user={u} size={56} ring onClick={() => onOpenStory(u.u)} />
             <span className="text-[11px] text-neutral-300 truncate w-full text-center">{u.u}</span>
+          </div>
+        ))}
+        {storyUsers.slice(1).filter((u) => !hasStory(u.u)).map((u) => (
+          <div key={u.u} className="flex flex-col items-center gap-1.5 w-[68px] shrink-0">
+            <Avatar user={u} size={56} onClick={() => actions.onOpenProfile(u.u)} />
+            <span className="text-[11px] text-neutral-500 truncate w-full text-center">{u.u}</span>
           </div>
         ))}
       </div>
@@ -833,7 +858,7 @@ function CreateScreen({ onShare, busy }) {
 
 /* ------------------------------ profile ------------------------------ */
 
-function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow, onOpenList, onEdit, onSettings, onBack, fromTab }) {
+function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow, onOpenList, onEdit, onSettings, onBack, fromTab, hasStory, onOpenStory, onAddStory }) {
   const u = users[username];
   if (!u) return <div className="flex-1 flex items-center justify-center text-neutral-500 text-sm">User not found.</div>;
   const own = username === me;
@@ -859,7 +884,11 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
 
       <div className="px-4 pt-4">
         <div className="flex items-center gap-6">
-          <Avatar user={u} size={80} ring />
+          <Avatar user={u} size={80} ring={hasStory(username)}
+            onClick={() => {
+              if (hasStory(username)) onOpenStory(username);
+              else if (username === me) onAddStory();
+            }} />
           <div className="flex-1 flex justify-around text-center">
             <div>
               <div className="text-lg font-bold text-neutral-100">{fmtCount(myPosts.length)}</div>
@@ -939,9 +968,12 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
 
 function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile, onOpenLikes, onDelete }) {
   const [text, setText] = useState("");
+  const [muted, setMuted] = useState(true);
   const liked = post.likes.includes(me);
   const author = users[post.author];
   const canModerate = post.author === me || users[me]?.isAdmin;
+
+  const doubleTap = () => { if (!liked) onLike(post.id); };
 
   const send = () => {
     const t = text.trim();
@@ -969,12 +1001,8 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
           </button>
           <span className="text-xs text-neutral-500">· {timeAgo(post.ts)}</span>
         </div>
-        {post.mediaType === "video" && post.video ? (
-          <video src={post.video} poster={post.image || undefined} controls playsInline loop
-            className="w-full max-h-[480px] object-contain bg-black" />
-        ) : (
-          <img src={post.image} alt="" className="w-full max-h-[480px] object-contain bg-neutral-950" />
-        )}
+        <PostMedia post={post} muted={muted} onToggleMute={() => setMuted((m) => !m)}
+          onDoubleClick={doubleTap} maxH="max-h-[480px]" />
         <div className="flex items-center gap-4 px-3 pt-3">
           <button onClick={() => onLike(post.id)} className="active:scale-90 transition-transform">
             <Heart size={26} className={liked ? "text-rose-500" : "text-neutral-100"} fill={liked ? "currentColor" : "none"} />
@@ -1561,6 +1589,189 @@ function Sidebar({ me, users, tab, isAdmin, onNav, onProfile, onAdmin }) {
   );
 }
 
+/* ------------------------------ story upload ------------------------------ */
+
+function StoryUploadModal({ onClose, onPost, busy }) {
+  const [mode, setMode] = useState(null);
+  const [image, setImage] = useState(null);
+  const [videoFile, setVideoFile] = useState(null);
+  const [videoPreview, setVideoPreview] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [err, setErr] = useState(null);
+  const imgRef = useRef(null);
+  const vidRef = useRef(null);
+
+  const pickImg = async (e) => {
+    const f = e.target.files?.[0]; e.target.value = ""; if (!f) return;
+    setErr(null);
+    try { setImage(await compressImage(f, 1080, 0.85)); setMode("image"); }
+    catch (x) { setErr(x.message); }
+  };
+  const pickVid = async (e) => {
+    const f = e.target.files?.[0]; e.target.value = ""; if (!f) return;
+    setErr(null); setChecking(true);
+    try {
+      const info = await loadVideo(f);
+      if (info.duration > 60.9) { setErr("Story videos can be up to 60 seconds."); return; }
+      if (f.size > 50 * 1024 * 1024) { setErr("That video is over 50MB. Try a shorter clip."); return; }
+      if (videoPreview) URL.revokeObjectURL(videoPreview);
+      setVideoFile(f); setVideoPreview(URL.createObjectURL(f)); setImage(info.posterDataUrl); setMode("video");
+    } catch (x) { setErr(x.message); } finally { setChecking(false); }
+  };
+
+  return (
+    <div className="absolute inset-0 z-50 bg-black flex flex-col anim-fade">
+      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
+        <button onClick={onClose}><X size={24} className="text-neutral-100" /></button>
+        <span className="text-neutral-100 font-semibold flex-1">Add to your story</span>
+        {mode && (
+          <button disabled={busy || checking}
+            onClick={() => onPost({ mediaType: mode, image, videoFile })}
+            className="text-sky-400 font-semibold text-sm disabled:opacity-40">
+            {busy ? "Posting…" : "Share"}
+          </button>
+        )}
+      </div>
+      <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={pickImg} />
+      <input ref={vidRef} type="file" accept="video/*" className="hidden" onChange={pickVid} />
+      <div className="flex-1 overflow-y-auto p-4">
+        {!mode ? (
+          <div className="space-y-3">
+            <button onClick={() => imgRef.current?.click()}
+              className="w-full aspect-square max-h-[360px] rounded-2xl border-2 border-dashed border-neutral-800 flex flex-col items-center justify-center gap-3 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors">
+              <Camera size={44} strokeWidth={1.3} /><span className="text-sm font-medium">Photo</span>
+            </button>
+            <button onClick={() => vidRef.current?.click()} disabled={checking}
+              className="w-full rounded-2xl border-2 border-dashed border-neutral-800 flex items-center justify-center gap-3 py-6 text-neutral-500 hover:border-neutral-600 hover:text-neutral-300 transition-colors disabled:opacity-60">
+              <Film size={28} strokeWidth={1.4} /><span className="text-sm font-medium">{checking ? "Checking…" : "Video (up to 60s)"}</span>
+            </button>
+          </div>
+        ) : (
+          <div className="relative rounded-2xl overflow-hidden bg-neutral-950">
+            {mode === "video"
+              ? <video src={videoPreview} controls playsInline className="w-full max-h-[480px] object-contain bg-black" />
+              : <img src={image} alt="" className="w-full max-h-[480px] object-contain" />}
+            <button onClick={() => { setMode(null); setImage(null); setVideoFile(null); if (videoPreview) URL.revokeObjectURL(videoPreview); setVideoPreview(null); }}
+              className="absolute top-2 right-2 bg-black/70 rounded-full p-1.5"><X size={16} className="text-white" /></button>
+          </div>
+        )}
+        {err && <div className="text-rose-400 text-xs text-center pt-3">{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ story viewer ------------------------------ */
+
+function StoryViewer({ username, stories, users, me, onClose, onDelete }) {
+  const items = stories;
+  const [i, setI] = useState(0);
+  const cur = items[i];
+  const [muted, setMuted] = useState(false);
+  const vidRef = useRef(null);
+
+  useEffect(() => { setI(0); }, [username]);
+
+  // auto-advance photos after 5s
+  useEffect(() => {
+    if (!cur || cur.mediaType === "video") return;
+    const t = setTimeout(() => { i + 1 < items.length ? setI(i + 1) : onClose(); }, 5000);
+    return () => clearTimeout(t);
+  }, [i, cur, items.length]);
+
+  if (!cur) return null;
+  const next = () => { i + 1 < items.length ? setI(i + 1) : onClose(); };
+  const prev = () => { if (i > 0) setI(i - 1); };
+
+  return (
+    <div className="absolute inset-0 z-50 bg-black flex flex-col anim-fade">
+      {/* progress bars */}
+      <div className="flex gap-1 px-3 pt-3">
+        {items.map((_, idx) => (
+          <div key={idx} className="flex-1 h-0.5 rounded-full bg-white/30 overflow-hidden">
+            <div className={"h-full bg-white " + (idx < i ? "w-full" : idx === i ? "w-full" : "w-0")} />
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center gap-3 px-4 py-3">
+        <Avatar user={users[username]} size={34} />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-semibold text-white"><Uname users={users} u={username} /></div>
+          <div className="text-[11px] text-white/60">{timeAgo(cur.ts)} ago</div>
+        </div>
+        {(cur.mediaType === "video") && (
+          <button onClick={() => setMuted((m) => !m)} className="text-white">
+            {muted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+          </button>
+        )}
+        {(username === me || users[me]?.isAdmin) && (
+          <button onClick={() => { onDelete(cur.id); next(); }} className="text-white/80"><Trash2 size={18} /></button>
+        )}
+        <button onClick={onClose} className="text-white"><X size={24} /></button>
+      </div>
+
+      <div className="flex-1 relative flex items-center justify-center bg-black">
+        {cur.mediaType === "video"
+          ? <video ref={vidRef} src={cur.video} autoPlay playsInline muted={muted}
+              onEnded={next} className="max-h-full max-w-full object-contain" />
+          : <img src={cur.image} alt="" className="max-h-full max-w-full object-contain" />}
+        {/* tap zones */}
+        <button onClick={prev} className="absolute left-0 top-0 bottom-0 w-1/3" aria-label="previous" />
+        <button onClick={next} className="absolute right-0 top-0 bottom-0 w-1/3" aria-label="next" />
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------ activity (notifications) ------------------------------ */
+
+function ActivityModal({ activity, users, posts, me, onClose, onOpenProfile, onOpenPost, onToggleFollow }) {
+  return (
+    <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
+      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3">
+        <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
+        <span className="text-neutral-100 font-semibold">Notifications</span>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {activity.length === 0 && (
+          <div className="text-center py-16 px-8">
+            <Heart size={40} className="mx-auto text-neutral-700 mb-3" />
+            <div className="text-neutral-300 font-semibold">Activity on your posts</div>
+            <div className="text-neutral-500 text-sm mt-1">Likes, comments and new followers show up here.</div>
+          </div>
+        )}
+        {activity.map((a) => {
+          const post = a.postId ? posts.find((p) => p.id === a.postId) : null;
+          return (
+            <div key={a.id} className={"flex items-center gap-3 px-4 py-3 " + (!a.seen ? "bg-sky-500/5" : "")}>
+              <Avatar user={users[a.actor]} size={42} onClick={() => { onClose(); onOpenProfile(a.actor); }} />
+              <div className="flex-1 min-w-0 text-sm text-neutral-100">
+                <button onClick={() => { onClose(); onOpenProfile(a.actor); }} className="font-semibold mr-1.5 align-bottom">
+                  <Uname users={users} u={a.actor} size={12} />
+                </button>
+                <span className="text-neutral-300">
+                  {a.type === "like" && "liked your post."}
+                  {a.type === "follow" && "started following you."}
+                  {a.type === "comment" && <>commented: {a.text}</>}
+                </span>
+                <span className="text-neutral-600"> · {timeAgo(a.ts)}</span>
+              </div>
+              {post && (
+                <button onClick={() => { onClose(); onOpenPost(post.id); }} className="shrink-0">
+                  <img src={post.image} alt="" className="w-11 h-11 rounded object-cover bg-neutral-900" />
+                </button>
+              )}
+              {a.type === "follow" && (
+                <FollowButton me={me} users={users} target={a.actor} onToggle={onToggleFollow} small />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* =============================== app =============================== */
 
 export default function App() {
@@ -1569,6 +1780,8 @@ export default function App() {
   const [users, setUsers] = useState({});
   const [posts, setPosts] = useState([]);
   const [notices, setNotices] = useState([]);
+  const [stories, setStories] = useState([]);
+  const [activity, setActivity] = useState([]);
   const [dataReady, setDataReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -1582,6 +1795,9 @@ export default function App() {
   const [editOpen, setEditOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [storyView, setStoryView] = useState(null);   // username whose story is open
+  const [storyUpload, setStoryUpload] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
   const [toast, setToast] = useState(null);
 
   const toastTimer = useRef(null);
@@ -1605,7 +1821,9 @@ export default function App() {
   /* ----- data loading ----- */
 
   const fetchAll = useCallback(async () => {
-    const [profilesRes, followsRes, postsRes, noticesRes] = await Promise.all([
+    const sinceStory = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    const myId = session?.user?.id || null;
+    const [profilesRes, followsRes, postsRes, noticesRes, storiesRes, activityRes] = await Promise.all([
       supabase.from("profiles").select("*"),
       supabase.from("follows").select("*"),
       supabase
@@ -1614,6 +1832,10 @@ export default function App() {
         .order("created_at", { ascending: false })
         .limit(100),
       supabase.from("notices").select("*").eq("acknowledged", false).order("created_at", { ascending: true }),
+      supabase.from("stories").select("*").gte("created_at", sinceStory).order("created_at", { ascending: true }),
+      myId
+        ? supabase.from("activity").select("*").eq("recipient", myId).order("created_at", { ascending: false }).limit(100)
+        : Promise.resolve({ data: [] }),
     ]);
 
     const profiles = profilesRes.data || [];
@@ -1659,12 +1881,28 @@ export default function App() {
       }))
       .filter((p) => p.author);
 
+    const storyList = (storiesRes.data || [])
+      .map((s) => ({
+        id: s.id, author: byId[s.author]?.username,
+        image: s.image_url, mediaType: s.media_type || "image",
+        video: s.video_url || null, ts: Date.parse(s.created_at),
+      }))
+      .filter((s) => s.author);
+
+    const acts = (activityRes.data || []).map((a) => ({
+      id: a.id, actor: byId[a.actor]?.username, type: a.type,
+      postId: a.post_id || null, text: a.text || null,
+      seen: !!a.seen, ts: Date.parse(a.created_at),
+    })).filter((a) => a.actor);
+
     setUsers(map);
     setPosts(mapped);
     setNotices(noticesRes.data || []);
+    setStories(storyList);
+    setActivity(acts);
     setDataReady(true);
     return map;
-  }, []);
+  }, [session]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
@@ -1785,6 +2023,49 @@ export default function App() {
     } finally { setBusy(false); }
   };
 
+  const postStory = async ({ mediaType, image, videoFile }) => {
+    setBusy(true);
+    try {
+      const meId = session.user.id;
+      const stem = `${meId}/story-${newId()}`;
+      let imageUrl = null, videoUrl = null;
+      if (mediaType === "video") {
+        videoUrl = await uploadFile(videoFile, stem + "-vid." + (videoFile.name.split(".").pop() || "mp4"));
+        if (image) imageUrl = await uploadDataUrl(image, stem + ".jpg");
+      } else {
+        imageUrl = await uploadDataUrl(image, stem + ".jpg");
+      }
+      const { data, error } = await supabase
+        .from("stories")
+        .insert({ author: meId, image_url: imageUrl || videoUrl, media_type: mediaType, video_url: videoUrl })
+        .select().single();
+      if (error) { showToast("Couldn't post story: " + error.message); return false; }
+      setStories((s) => [...s, {
+        id: data.id, author: me, image: imageUrl || videoUrl,
+        mediaType, video: videoUrl, ts: Date.parse(data.created_at),
+      }]);
+      setStoryUpload(false);
+      showToast("Story posted");
+      return true;
+    } catch (e) {
+      showToast("Couldn't post story: " + (e.message || "upload failed"));
+      return false;
+    } finally { setBusy(false); }
+  };
+
+  const deleteStory = async (storyId) => {
+    setStories((s) => s.filter((x) => x.id !== storyId));
+    await supabase.from("stories").delete().eq("id", storyId);
+    showToast("Story deleted");
+  };
+
+  const markActivitySeen = async () => {
+    const unseen = activity.filter((a) => !a.seen).map((a) => a.id);
+    if (!unseen.length) return;
+    setActivity((acts) => acts.map((a) => ({ ...a, seen: true })));
+    await supabase.from("activity").update({ seen: true }).in("id", unseen);
+  };
+
   const deletePost = async (id) => {
     const post = posts.find((p) => p.id === id);
     setPosts((ps) => ps.filter((p) => p.id !== id));
@@ -1795,6 +2076,14 @@ export default function App() {
       if (path) supabase.storage.from("images").remove([decodeURIComponent(path)]);
     }
     showToast("Post deleted");
+  };
+
+  const notify = async (recipientUsername, type, postId = null, text = null) => {
+    const recipientId = users[recipientUsername]?.id;
+    if (!recipientId || recipientUsername === me) return;
+    await supabase.from("activity").insert({
+      recipient: recipientId, actor: session.user.id, type, post_id: postId, text,
+    });
   };
 
   const toggleLike = async (id) => {
@@ -1809,14 +2098,17 @@ export default function App() {
       ? await supabase.from("likes").delete().match({ post_id: id, user_id: meId })
       : await supabase.from("likes").insert({ post_id: id, user_id: meId });
     if (error) fetchAll();
+    else if (!liked) notify(post.author, "like", id);
   };
 
   const addComment = async (id, text) => {
     const meId = session.user.id;
+    const post = posts.find((p) => p.id === id);
     const c = { u: me, text, ts: Date.now() };
     setPosts((ps) => ps.map((p) => (p.id === id ? { ...p, comments: [...p.comments, c] } : p)));
     const { error } = await supabase.from("comments").insert({ post_id: id, user_id: meId, text });
     if (error) fetchAll();
+    else if (post) notify(post.author, "comment", id, text.slice(0, 120));
   };
 
   const toggleFollow = async (target) => {
@@ -1834,6 +2126,7 @@ export default function App() {
       ? await supabase.from("follows").delete().match({ follower: meId, following: targetId })
       : await supabase.from("follows").insert({ follower: meId, following: targetId });
     if (error) fetchAll();
+    else if (!isF) notify(target, "follow");
   };
 
   const saveProfile = async ({ name, bio, avatar, changedAvatar }) => {
@@ -2040,6 +2333,13 @@ export default function App() {
 
   const activePost = posts.find((p) => p.id === activePostId) || null;
   const meUser = me ? users[me] : null;
+  const storyByUser = useMemo(() => {
+    const m = {};
+    stories.forEach((s) => { (m[s.author] ||= []).push(s); });
+    return m;
+  }, [stories]);
+  const hasStory = (u) => (storyByUser[u]?.length || 0) > 0;
+  const unseenActivity = activity.filter((a) => !a.seen).length;
 
   /* ----- render ----- */
 
@@ -2081,7 +2381,11 @@ export default function App() {
     <>
       {tab === "home" && (
         <HomeScreen me={me} users={users} posts={posts} feedTab={feedTab} setFeedTab={setFeedTab}
-          onRefresh={refresh} refreshing={refreshing} {...sharedActions} />
+          onRefresh={refresh} refreshing={refreshing}
+          hasStory={hasStory} unseenActivity={unseenActivity}
+          onOpenActivity={() => { setActivityOpen(true); markActivitySeen(); }}
+          onOpenStory={(u) => setStoryView(u)} onAddStory={() => setStoryUpload(true)}
+          {...sharedActions} />
       )}
       {tab === "search" && (
         <SearchScreen me={me} users={users} posts={posts}
@@ -2092,7 +2396,8 @@ export default function App() {
         <ProfileScreen username={profileUser || me} me={me} users={users} posts={posts}
           onOpenPost={openPost} onToggleFollow={toggleFollow} onOpenList={openList}
           onEdit={() => setEditOpen(true)} onSettings={() => setSettingsOpen(true)}
-          onBack={() => { setTab(prevTab); setProfileUser(null); }} fromTab={tab} />
+          onBack={() => { setTab(prevTab); setProfileUser(null); }} fromTab={tab}
+          hasStory={hasStory} onOpenStory={(u) => setStoryView(u)} onAddStory={() => setStoryUpload(true)} />
       )}
 
       {/* bottom nav (mobile only) */}
@@ -2134,6 +2439,18 @@ export default function App() {
       )}
       {adminOpen && isAdmin && (
         <AdminPanel users={users} posts={posts} me={me} onClose={() => setAdminOpen(false)} admin={admin} />
+      )}
+      {storyUpload && (
+        <StoryUploadModal onClose={() => setStoryUpload(false)} onPost={postStory} busy={busy} />
+      )}
+      {storyView && storyByUser[storyView] && (
+        <StoryViewer username={storyView} stories={storyByUser[storyView]} users={users} me={me}
+          onClose={() => setStoryView(null)} onDelete={deleteStory} />
+      )}
+      {activityOpen && (
+        <ActivityModal activity={activity} users={users} posts={posts} me={me}
+          onClose={() => setActivityOpen(false)} onOpenProfile={openProfile} onOpenPost={openPost}
+          onToggleFollow={toggleFollow} />
       )}
       {notices.length > 0 && <NoticesModal notices={notices} onAck={ackNotices} />}
       <Toast toast={toast} />
