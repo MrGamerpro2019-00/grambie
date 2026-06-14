@@ -768,7 +768,7 @@ function CreateScreen({ onShare, busy }) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center justify-between px-4 h-14 safe-top safe-x">
+      <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center justify-between px-4 min-h-14 safe-top safe-x">
         <span className="text-neutral-100 font-semibold">New post</span>
         <button
           disabled={!canShare || busy || extracting || checking}
@@ -868,7 +868,7 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center px-4 h-14 gap-3 safe-top safe-x">
+      <div className="sticky top-0 z-10 bg-black/95 backdrop-blur border-b border-neutral-900 flex items-center px-4 min-h-14 gap-3 safe-top safe-x">
         {!own && fromTab !== "profile" && (
           <button onClick={onBack}><ChevronLeft size={24} className="text-neutral-100" /></button>
         )}
@@ -984,7 +984,7 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
 
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">Post</span>
         <div className="flex-1" />
@@ -1058,7 +1058,7 @@ function PostModal({ post, users, me, onClose, onLike, onComment, onOpenProfile,
 function ListModal({ title, usernames, users, me, onClose, onOpenProfile, onToggleFollow }) {
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">{title}</span>
       </div>
@@ -1106,7 +1106,7 @@ function EditProfileModal({ user, onClose, onSave, busy }) {
 
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><X size={24} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold flex-1">Edit profile</span>
         <button disabled={busy} onClick={() => onSave({ name: name.trim(), bio: bio.trim(), avatar, changedAvatar })}
@@ -1164,7 +1164,7 @@ function SettingsModal({ user, onClose, onChangeUsername, onChangePassword, onLo
 
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">Settings</span>
       </div>
@@ -1324,7 +1324,7 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
 
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={() => (sel ? setSel(null) : onClose())}>
           <ChevronLeft size={26} className="text-neutral-100" />
         </button>
@@ -1621,7 +1621,7 @@ function StoryUploadModal({ onClose, onPost, busy }) {
 
   return (
     <div className="absolute inset-0 z-50 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><X size={24} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold flex-1">Add to your story</span>
         {mode && (
@@ -1728,7 +1728,7 @@ function StoryViewer({ username, stories, users, me, onClose, onDelete }) {
 function ActivityModal({ activity, users, posts, me, onClose, onOpenProfile, onOpenPost, onToggleFollow }) {
   return (
     <div className="absolute inset-0 z-40 bg-black flex flex-col anim-fade">
-      <div className="flex items-center px-3 h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
+      <div className="flex items-center px-3 min-h-14 border-b border-neutral-900 gap-3 safe-top safe-x">
         <button onClick={onClose}><ChevronLeft size={26} className="text-neutral-100" /></button>
         <span className="text-neutral-100 font-semibold">Notifications</span>
       </div>
@@ -2401,7 +2401,7 @@ export default function App() {
       )}
 
       {/* bottom nav (mobile only) */}
-      <div className="md:hidden border-t border-neutral-900 bg-black flex items-center justify-around h-14 shrink-0 safe-bottom safe-x">
+      <div className="md:hidden border-t border-neutral-900 bg-black flex items-center justify-around min-h-14 shrink-0 safe-bottom safe-x">
         {navItems.map((n) => (
           <button key={n.id} onClick={() => navTo(n.id)}
             className={tab === n.id ? "text-neutral-100" : "text-neutral-500 hover:text-neutral-300"}>
