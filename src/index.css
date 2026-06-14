@@ -1,5 +1,25 @@
 @import "tailwindcss";
 
-html, body, #root {
-  height: 100%;
+html, body, #root { height: 100%; }
+html { -webkit-tap-highlight-color: transparent; }
+
+/* Expose iOS safe-area insets as utilities we can apply to the app frame.
+   When installed to the Home Screen, iOS reports the notch/home-bar padding
+   through env(safe-area-inset-*). Fallbacks are 0 for normal browsers. */
+.safe-top    { padding-top: env(safe-area-inset-top, 0px); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
 }
+
+/* small smooth animations */
+@keyframes gFadeIn { from { opacity: 0 } to { opacity: 1 } }
+@keyframes gFadeUp { from { opacity: 0; transform: translateY(10px) } to { opacity: 1; transform: none } }
+@keyframes gPop { 0% { transform: scale(.5) } 55% { transform: scale(1.25) } 100% { transform: scale(1) } }
+
+.anim-fade { animation: gFadeIn .25s ease both }
+.anim-up   { animation: gFadeUp .35s cubic-bezier(.21, 1.02, .73, 1) both }
+.anim-pop  { animation: gPop .35s ease both }
+
+button { transition: opacity .15s ease, background-color .15s ease, color .15s ease }
