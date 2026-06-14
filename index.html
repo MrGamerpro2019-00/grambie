@@ -2,15 +2,52 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="theme-color" content="#000000" />
+    <meta name="description" content="Grambie — share photos, follow friends, explore." />
     <title>Grambie</title>
+
+    <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/x-icon" href="/favicon.ico" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/favicon-192.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon-180.png" />
-    <meta name="description" content="Grambie — share photos, follow friends, explore." />
-    <style>html, body { background: #000; }</style>
+
+    <!-- Full-screen "web app" mode on iOS when launched from the Home Screen -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Grambie" />
+
+    <style>
+      html, body { background: #000; height: 100%; }
+      body { margin: 0; }
+    </style>
+
+    <!--
+      Keep navigation INSIDE the standalone window.
+      Without this, any same-origin link tap on iOS can kick the app out to
+      Safari and you lose full-screen. This intercepts those clicks and
+      navigates in place so the Home Screen app stays full-screen.
+    -->
+    <script>
+      (function () {
+        var standalone =
+          ("standalone" in window.navigator && window.navigator.standalone) ||
+          (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+        if (!standalone) return;
+        document.addEventListener("click", function (e) {
+          var a = e.target && e.target.closest ? e.target.closest("a") : null;
+          if (!a) return;
+          var href = a.getAttribute("href");
+          if (!href) return;
+          if (a.target === "_blank" || /^(mailto:|tel:|sms:)/.test(href)) return;
+          if (a.host && a.host !== window.location.host) return;
+          e.preventDefault();
+          window.location.href = a.href;
+        }, false);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
