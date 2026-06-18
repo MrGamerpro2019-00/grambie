@@ -3,7 +3,7 @@ import {
   Home, Search, PlusSquare, Heart, MessageCircle, Send, Bookmark,
   MoreHorizontal, X, ChevronLeft, LogOut, Camera, LayoutGrid, Trash2,
   RefreshCw, Plus, Lock, Shield, Settings, BadgeCheck, AlertTriangle, Ban, Info,
-  Music, Volume2, VolumeX, Film
+  Music, Volume2, VolumeX, Film, Flame
 } from "lucide-react";
 import { supabase, emailForKey, newLoginKey } from "./supabase.js";
 
@@ -48,6 +48,51 @@ function shownFollowers(u) {
 }
 function shownLikes(post) {
   return (post?.likes?.length || 0) + (post?.likeBoost || 0);
+}
+
+// ---- streaks (all based on the EST calendar day) ----
+
+// Today's date in America/New_York as 'YYYY-MM-DD'. The streak "day" flips at
+// midnight EST, matching the server's est_today().
+function estToday() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
+  return parts; // en-CA gives YYYY-MM-DD
+}
+
+function estYesterday() {
+  const now = new Date();
+  const y = new Date(now.getTime() - 24 * 3600 * 1000);
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(y);
+}
+
+// Given a user's stored streak, return how it should display RIGHT NOW.
+//  count   : the streak number to show (0 if it has lapsed)
+//  glowing : true if they've already posted today (EST) -> fire glows
+//  active  : count > 0
+function streakStatus(u) {
+  const today = estToday();
+  const yest = estYesterday();
+  const last = u?.lastPostDay || null;
+  let count = u?.streakCount || 0;
+  if (last === today) return { count, glowing: true, active: count > 0 };
+  if (last === yest) return { count, glowing: false, active: count > 0 }; // still alive, needs a post today
+  return { count: 0, glowing: false, active: false }; // lapsed
+}
+
+// Compute the new streak values when the user posts now.
+function streakAfterPost(u) {
+  const today = estToday();
+  const yest = estYesterday();
+  const last = u?.lastPostDay || null;
+  let count = u?.streakCount || 0;
+  if (last === today) return { streak_count: count, last_post_day: today }; // already counted today
+  if (last === yest) count = count + 1;          // consecutive day
+  else count = 1;                                 // new or broken streak -> start at 1
+  return { streak_count: count, last_post_day: today };
 }
 
 function banLabel(u) {
@@ -540,6 +585,18 @@ function HomeScreen({ me, users, posts, feedTab, setFeedTab, onRefresh, refreshi
         <div className="flex items-center justify-between px-4 h-14">
           <Logo size={30} />
           <div className="flex items-center gap-5">
+            {(() => {
+              const s = streakStatus(meUser);
+              if (!s.active) return null;
+              return (
+                <div className="flex items-center gap-1" title={s.glowing ? "Posted today — streak safe" : "Post today to keep your streak"}>
+                  <Flame size={20}
+                    className={s.glowing ? "text-orange-500" : "text-neutral-600"}
+                    fill={s.glowing ? "#f97316" : "none"} />
+                  <span className={"text-sm font-bold " + (s.glowing ? "text-orange-400" : "text-neutral-500")}>{s.count}</span>
+                </div>
+              );
+            })()}
             <button onClick={onRefresh} className={refreshing ? "animate-spin" : ""}>
               <RefreshCw size={21} className="text-neutral-100" />
             </button>
@@ -872,8 +929,20 @@ function ProfileScreen({ username, me, users, posts, onOpenPost, onToggleFollow,
         {!own && fromTab !== "profile" && (
           <button onClick={onBack}><ChevronLeft size={24} className="text-neutral-100" /></button>
         )}
-        <span className="text-neutral-100 font-bold text-lg flex-1 truncate">
+        <span className="text-neutral-100 font-bold text-lg flex-1 truncate flex items-center gap-2">
           <Uname users={users} u={username} size={17} />
+          {(() => {
+            const s = streakStatus(u);
+            if (!s.active) return null;
+            return (
+              <span className="inline-flex items-center gap-0.5 text-sm font-bold"
+                title={s.glowing ? "Posted today" : "Hasn't posted today yet"}>
+                <Flame size={16} className={s.glowing ? "text-orange-500" : "text-neutral-600"}
+                  fill={s.glowing ? "#f97316" : "none"} />
+                <span className={s.glowing ? "text-orange-400" : "text-neutral-500"}>{s.count}</span>
+              </span>
+            );
+          })()}
         </span>
         {own && (
           <button onClick={onSettings} className="text-neutral-300 hover:text-neutral-100 transition-colors">
@@ -1357,6 +1426,24 @@ function AdminPanel({ users, posts, me, onClose, admin }) {
                 <div className="text-xs text-neutral-500">
                   {fmtCount(shownFollowers(target))} followers · {fmtCount(posts.filter((p) => p.author === target.u).length)} posts
                 </div>
+              </div>
+            </div>
+
+            {/* account info */}
+            <div className="bg-neutral-950 border border-neutral-800 rounded-xl px-4 py-3 text-sm space-y-1.5">
+              <div className="flex justify-between gap-3">
+                <span className="text-neutral-500">Joined</span>
+                <span className="text-neutral-200">{target.joined ? new Date(target.joined).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" }) : "—"}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-neutral-500">Last online</span>
+                <span className="text-neutral-200">{target.lastSeen ? timeAgo(target.lastSeen) + " ago" : "—"}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span className="text-neutral-500">Streak</span>
+                <span className="text-neutral-200">
+                  {(() => { const s = streakStatus(target); return s.active ? `${s.count} day${s.count === 1 ? "" : "s"}${s.glowing ? " (posted today)" : ""}` : "none"; })()}
+                </span>
               </div>
             </div>
 
@@ -1852,6 +1939,9 @@ export default function App() {
         verified: !!p.verified, badge: p.badge || (p.verified ? "blue" : ""),
         staff: !!p.staff, isAdmin: !!p.is_admin, followerBoost: p.follower_boost || 0,
         bannedUntil: p.banned_until || null, banReason: p.ban_reason || null,
+        streakCount: p.streak_count || 0, lastPostDay: p.last_post_day || null,
+        joined: p.created_at ? Date.parse(p.created_at) : null,
+        lastSeen: p.last_seen ? Date.parse(p.last_seen) : null,
       };
     });
     follows.forEach((f) => {
@@ -1917,6 +2007,15 @@ export default function App() {
   useEffect(() => {
     if (authReady && dataReady && session && !me && !busy) supabase.auth.signOut();
   }, [authReady, dataReady, session, me, busy]);
+
+  // Record that this user opened the app (for the admin "last online" view).
+  const seenPinged = useRef(false);
+  useEffect(() => {
+    if (me && session && !seenPinged.current) {
+      seenPinged.current = true;
+      supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", session.user.id);
+    }
+  }, [me, session]);
 
   /* ----- auth actions ----- */
 
@@ -2014,8 +2113,17 @@ export default function App() {
         mediaType, video: videoUrl, likeBoost: 0,
         likes: [], comments: [], ts: Date.parse(data.created_at),
       }, ...ps]);
+
+      // update posting streak (EST-day based)
+      const su = streakAfterPost(users[me]);
+      const prevCount = streakStatus(users[me]).count;
+      await supabase.from("profiles").update(su).eq("id", meId);
+      setUsers((u) => ({ ...u, [me]: { ...u[me], streakCount: su.streak_count, lastPostDay: su.last_post_day } }));
+
       setTab("profile"); setProfileUser(me);
-      showToast("Shared");
+      showToast(su.streak_count > prevCount
+        ? `🔥 ${su.streak_count} day streak!`
+        : "Shared");
       return true;
     } catch (e) {
       showToast("Couldn't share: " + (e.message || "upload failed"));
